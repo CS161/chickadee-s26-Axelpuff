@@ -73,8 +73,10 @@ void memusage::refresh() {
     }
 
     memset(v_, 0, (maxpa / PAGESIZE) * sizeof(*v_));
+    // mark that array we just made
+    mark(kptr2pa(v_), f_kernel);
 
-    // mark kernel ranges of physical memory
+    // mark ranges of physical memory
     // We handle reserved ranges of physical memory separately.
     for (auto range = physical_ranges.begin();
          range != physical_ranges.end();
@@ -86,6 +88,14 @@ void memusage::refresh() {
                 mark(pa, f_kernel);
             }
         }
+    }
+
+    // include cpu idle tasks in kernel memory
+    for (int cpuid = 0; cpuid < ncpu; ++cpuid) {
+        // this should get the kernel pointer to the idle task
+        void* idle_task_ = cpus[cpuid].idle_task_;
+        assert(idle_task_);
+        mark(ka2pa(idle_task_), f_kernel);
     }
 
     // mark pages accessible from each process's page table
@@ -105,8 +115,9 @@ void memusage::refresh() {
                 for (vmiter it(p, 0); it.low(); ) {
                     if (it.user()) {
                         mark(it.pa(), f_user | f_process(pid));
-                        it.next();
+                        it += PAGESIZE; //it.next();
                     } else {
+                        // log_printf("%p\n", it.pa());
                         it.next_range();
                     }
                 }
