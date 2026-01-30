@@ -195,7 +195,7 @@ uint16_t memusage::symbol_at(uintptr_t pa) const {
 static void console_memviewer_virtual(memusage& mu, proc* vmp) {
     const char* statemsg = vmp->pstate_ == proc::ps_faulted ? " (faulted)" : "";
     console_printf(CPOS(10, 26),
-                   CS_WHITE "VIRTUAL ADDRESS SPACE FOR %d%C%s\n", vmp->id_,
+                   CS_WHITE "VIRTUAL ADDRESS SPACE FOR %d%C%s", vmp->id_,  // get rid of newline for cosmetics
                    0x0700, statemsg);
 
     for (vmiter it(vmp, 0);
@@ -232,8 +232,8 @@ void console_memviewer(proc* vmp) {
 
     // print physical memory
     console_printf(CPOS(0, 32),
-                   CS_WHITE "PHYSICAL MEMORY                  @%lu\n",
-                   ticks.load());
+                   CS_WHITE "PHYSICAL MEMORY");
+    console_printf(CPOS(0, 64), "@%lu", ticks.load()); // some silly edits to make it less ugly
 
     for (int pn = 0; pn * PAGESIZE < memusage::max_view_pa; ++pn) {
         if (pn % 64 == 0) {

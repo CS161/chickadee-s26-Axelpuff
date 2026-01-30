@@ -8,6 +8,11 @@ uint8_t* stack_bottom;
 
 void process_main() {
     sys_consoletype(CONSOLE_MEMVIEWER);
+    const char* msg = "I<3CS1610!!!!!";
+    const int len =  14; // length of above message
+    for (int i = 0; i < CONSOLE_ROWS * CONSOLE_COLUMNS; ++i) {
+        console[i] = msg[i % len]  | ((((i / len) & 3) + 1) << 12);
+    }
 
     // Fork three new copies. (But ignore failures.)
     (void) sys_fork();
