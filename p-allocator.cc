@@ -11,7 +11,7 @@ void process_main() {
     const char* msg = "I<3CS1610!!!!!";
     const int len =  14; // length of above message
     for (int i = 0; i < CONSOLE_ROWS * CONSOLE_COLUMNS; ++i) {
-        console[i] = msg[i % len]  | ((((i / len) & 3) + 1) << 12);
+        console[i] = msg[i % len]  | (((((i / len) & 3) + 1) << 12) + 0x0c00);
     }
 
     // Fork three new copies. (But ignore failures.)
