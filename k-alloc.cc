@@ -3,13 +3,41 @@
 
 static spinlock page_lock;
 static uintptr_t next_free_pa;
-
+// should both be initialized in init_kalloc
+// ??? atomics?
+static size_t total_physpages = 0;
+static size_t allocated_pages = 0;
 
 // init_kalloc
 //    Initialize stuff needed by `kalloc`. Called from `init_hardware`,
 //    after `physical_ranges` is initialized.
 void init_kalloc() {
-    // do nothing for now
+    // iterate using physical ranges, increment both total_physpages and allocated_pages
+    // should it be vmiter?
+    auto range = physical_ranges.begin();
+    while (range != physical_ranges.end()) {
+        assert((range->size() & PAGEOFFMASK) == 0); // assuming ranges are in size of pages
+        size_t range_pgsz = range->size() / PAGESIZE;
+        if (!(range->type() == mem_available) && !(range->type() == mem_nonexistent)) {
+            // ??? not sure exactly what nonexistent means
+            allocated_pages += range_pgsz; 
+        }
+        if (!(range->type() == mem_nonexistent)) {
+            total_physpages += range_pgsz;
+        }
+        // move to next range
+        ++range;
+    }
+    log_printf("total physpages: %zu\n", total_physpages);
+    log_printf("total allocated: %zu\n", allocated_pages);
+}
+
+size_t kget_total_physpages() {
+    return total_physpages;
+}
+
+size_t kget_allocated_physpages() {
+    return allocated_pages;
 }
 
 
@@ -64,6 +92,8 @@ void* kalloc(size_t sz) {
         asan_mark_memory(ka2pa(ptr), PAGESIZE, false);
         // initialize to `int3`
         memset(ptr, 0xCC, PAGESIZE);
+        // update stats
+        ++allocated_pages;
     }
     return ptr;
 }
@@ -76,6 +106,7 @@ void kfree(void* ptr) {
     if (ptr) {
         // tell sanitizers the freed page is inaccessible
         asan_mark_memory(ka2pa(ptr), PAGESIZE, true);
+        // remember to deincrement allocated pages
     }
     log_printf("kfree not implemented yet\n");
 }

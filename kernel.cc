@@ -249,6 +249,9 @@ uintptr_t proc::syscall(regstate* regs) {
         return bufcache::get().sync(drop);
     }
 
+    case SYSCALL_GETUSAGE:
+        return syscall_getusage(regs);
+
     default:
         // no such system call
         log_printf("%d: no such system call %u\n", id_, regs->reg_rax);
@@ -432,6 +435,36 @@ static void memshow() {
     }
 }
 
+// proc::syscall_getusage(regs)
+//  Get system usage stats.
+int proc::syscall_getusage(regstate* regs) {
+    // extract and validate pointer
+    uintptr_t addr = regs->reg_rdi;
+    uintptr_t pg_addr = (addr / PAGESIZE) * PAGESIZE;
+    log_printf("addr: %p\n", addr);
+    if (pg_addr >= VA_LOWEND || (pg_addr & 0xFFF) != 0) {
+        log_printf("1a\n");
+        return E_FAULT;
+    }
+    if (addr % alignof(usage) != 0) { // right way to check for this?
+          log_printf("1b\n");
+          return E_FAULT;
+    }
+    vmiter it(this, pg_addr);
+    if (!it.present() || !it.writable() || !it.user()) {
+        log_printf("2\n");
+        return E_FAULT; // correct error here?
+    }
+    log_printf("3\n");    
+    usage* u = reinterpret_cast<usage*>(addr); // trust the user to not give us a garbage pointer and ruin their own memory
+    // call some stuff from k-alloc.cc to get stats
+    // put them in the struct
+    u->time = ticks;
+    u->free_pages = kget_total_physpages() - kget_allocated_physpages();
+    u->allocated_pages = kget_allocated_physpages();
+    log_printf("test: %zu\n", u->allocated_pages);
+    return 0;
+}
 
 // tick()
 //    Called once every tick (0.01 sec, 1/HZ) by CPU 0. Updates the `ticks`

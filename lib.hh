@@ -319,7 +319,7 @@ struct bitset_view {
 
 // Add new system calls here.
 // Your numbers should be >=128 to avoid conflicts.
-
+#define SYSCALL_GETUSAGE        128
 
 // System call error return values
 

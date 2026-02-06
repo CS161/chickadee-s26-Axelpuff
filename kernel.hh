@@ -73,6 +73,8 @@ struct __attribute__((aligned(4096))) proc {
     uintptr_t syscall_write(regstate* reg);
     uintptr_t syscall_readdiskfile(regstate* reg);
 
+    int syscall_getusage(regstate* regs);
+
     inline irqstate lock_pagetable_read();
     inline void unlock_pagetable_read(irqstate& irqs);
 
@@ -312,6 +314,9 @@ inline T read_unaligned(const uint8_t* ptr, T (U::* member)) {
     return a;
 }
 
+// desc tba
+size_t kget_total_physpages();
+size_t kget_allocated_physpages();
 
 // kalloc(sz)
 //    Allocate and return a pointer to at least `sz` contiguous bytes

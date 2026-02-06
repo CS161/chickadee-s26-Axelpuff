@@ -308,6 +308,12 @@ pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top);
     assert(false);
 }
 
+// sys_getusage()
+//    Return statistics about machine state.
+inline int sys_getusage(usage* u) {
+    return make_syscall(SYSCALL_GETUSAGE, reinterpret_cast<uintptr_t>(u));
+}
+
 
 // dprintf(fd, format, ...)
 //    Construct a string from `format` and pass it to `sys_write(fd)`.
