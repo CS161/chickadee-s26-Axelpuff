@@ -319,7 +319,6 @@ int proc::syscall_fork(regstate* regs) {
   for (; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE)
     {
       vmiter it(this, addr);
-      	  log_printf("Looking at %p\n", it.va());
       if (it.writable() && addr != CONSOLE_ADDR)
         {
 	  assert(it.user());
@@ -335,12 +334,10 @@ int proc::syscall_fork(regstate* regs) {
 	  //     kfree(pa);
 	  //     goto cleanup_alloced_memory;
           //   }
-	  log_printf("Copying %p\n", it.va());
-	  memcpy(pa, reinterpret_cast<void *>(it.pa()), PAGESIZE);
+	  memcpy(pa, reinterpret_cast<void *>(addr), PAGESIZE);
         }
       else if (it.user())
         {
-	  log_printf("Linking %p\n", it.va());
 	  // copy read-only segments
 	  int r = vmiter(child_pagetable, it.va()).try_map(it.pa(), it.perm());
 	  // if (r != 0)
@@ -353,7 +350,6 @@ int proc::syscall_fork(regstate* regs) {
 	  // physpages[pageno].refcount++;
         }
     }
-
   // init new ptable entry
   int pid = -2;
   proc* p;
@@ -366,7 +362,7 @@ int proc::syscall_fork(regstate* regs) {
    p = knew<proc>();
    p->id_ = pid;
    p->init_user(child_pagetable);
-   *(p->regs_) = *(this->regs_); // ??? ok?
+   *(p->regs_) = *regs;
    p->regs_->reg_rax = 0;    
    ptable[pid] = p;
   }
@@ -556,28 +552,22 @@ int proc::syscall_getusage(regstate* regs) {
   // extract and validate pointer
   uintptr_t addr = regs->reg_rdi;
   uintptr_t pg_addr = (addr / PAGESIZE) * PAGESIZE;
-  log_printf("addr: %p\n", addr);
   if (pg_addr >= VA_LOWEND || (pg_addr & 0xFFF) != 0) {
-    log_printf("1a\n");
     return E_FAULT;
   }
   if (addr % alignof(usage) != 0) { // right way to check for this?
-    log_printf("1b\n");
     return E_FAULT;
   }
   vmiter it(this, pg_addr);
   if (!it.present() || !it.writable() || !it.user()) {
-    log_printf("2\n");
     return E_FAULT; // correct error here?
   }
-  log_printf("3\n");    
   usage* u = reinterpret_cast<usage*>(addr); // trust the user to not give us a garbage pointer and ruin their own memory
   // call some stuff from k-alloc.cc to get stats
   // put them in the struct
   u->time = ticks;
   u->free_pages = kget_total_physpages() - kget_allocated_physpages();
   u->allocated_pages = kget_allocated_physpages();
-  log_printf("test: %zu\n", u->allocated_pages);
   return 0;
 }
 
