@@ -263,6 +263,8 @@ syscall_entry:
 
         // When `proc::syscall` returns, `%rax` holds the return value.
         // Preserve that, plus all callee-saved registers.
+        
+        call _ZN4proc12check_canaryEv
 
         movq %gs:(8), %rdi             // assert process is runnable
         cmpl $PROC_RUNNABLE, 24(%rdi)

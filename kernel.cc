@@ -263,16 +263,7 @@ uintptr_t proc::syscall(regstate* regs) {
     log_printf("(before) proc %i canary: %i\n", this->id_, this->canary);
     int cool = fact(256);
     log_printf("Look at this cool number: %i\n", cool);
-    // char data[1];
-    // data[1] = 24;
-    // data[4051] = 24;
-    // log_printf("Just tried to corrupt %p\n", &data[1]);
-    // log_printf("Just tried to corrupt %p\n", &data[4051]);
-    // log_printf("Proc address: %p\n", this);
-    // log_printf("Canary address: %p\n", &this->canary);
     log_printf("(after) proc %i canary: %i\n", this->id_, this->canary);
-    log_printf("hi\n");
-    this->check_canary();
     return 0;
   }
 
@@ -570,7 +561,7 @@ static void memshow() {
   }
 }
 
-void proc::check_canary() {
+[[gnu::noinline]] void proc::check_canary() {
   assert(this->canary == CANARY_VALUE);
 }
 
@@ -622,7 +613,7 @@ void tick() {
   // Update current time
   ++ticks;
 
-  check_canaries(); // seems useless
+  // check_canaries(); // seems useless
     
   // Update display
   if (consoletype == CONSOLE_MEMVIEWER) {
