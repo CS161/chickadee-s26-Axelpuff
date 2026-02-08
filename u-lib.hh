@@ -72,6 +72,11 @@ __always_inline void access_memory(const void* ptr) {
     asm volatile ("" : : "m" (*(const char*) ptr));
 }
 
+// sys_corrupt
+//    Make an obnoxiously large structure in the kernel stack.
+inline pid_t sys_corrupt() {
+  return make_syscall(SYSCALL_CORRUPT);
+}
 
 // sys_getpid
 //    Return current process ID.

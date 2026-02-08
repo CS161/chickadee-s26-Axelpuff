@@ -84,7 +84,6 @@ void start_initial_process(pid_t pid, const char* name) {
   cpus[pid % ncpu].enqueue(p);
 }
 
-
 // proc::exception(reg)
 //    Exception handler (for interrupts, traps, and faults).
 //
@@ -159,6 +158,14 @@ void proc::exception(regstate* regs) {
   // return to interrupted context
 }
 
+int fact(int n) {
+    char test = 0;
+    log_printf("Stack now at: %p\n", &test); // this forces the compiler not to optimize
+  if (n <= 1) {
+    return 1;
+  }
+  return n * fact(n - 1);
+}
 
 // proc::syscall(regs)
 //    System call handler.
@@ -251,6 +258,23 @@ uintptr_t proc::syscall(regstate* regs) {
 
   case SYSCALL_GETUSAGE:
     return syscall_getusage(regs);
+
+  case SYSCALL_CORRUPT: {
+    log_printf("(before) proc %i canary: %i\n", this->id_, this->canary);
+    int cool = fact(256);
+    log_printf("Look at this cool number: %i\n", cool);
+    // char data[1];
+    // data[1] = 24;
+    // data[4051] = 24;
+    // log_printf("Just tried to corrupt %p\n", &data[1]);
+    // log_printf("Just tried to corrupt %p\n", &data[4051]);
+    // log_printf("Proc address: %p\n", this);
+    // log_printf("Canary address: %p\n", &this->canary);
+    log_printf("(after) proc %i canary: %i\n", this->id_, this->canary);
+    log_printf("hi\n");
+    this->check_canary();
+    return 0;
+  }
 
   default:
     // no such system call
@@ -546,6 +570,25 @@ static void memshow() {
   }
 }
 
+void proc::check_canary() {
+  assert(this->canary == CANARY_VALUE);
+}
+
+static void check_canaries() {
+  // static unsigned long last_check = 0;
+  // if (last_check != 0 && ticks - last_check < HZ / 25) {
+  //   return;
+  // }
+  // last_check = ticks;
+  
+  for (int pid = 1; pid != NPROC; ++pid) {
+    if (!ptable[pid]) {
+      continue;
+    }
+    ptable[pid]->check_canary();
+  }
+}
+
 // proc::syscall_getusage(regs)
 //  Get system usage stats.
 int proc::syscall_getusage(regstate* regs) {
@@ -579,6 +622,8 @@ void tick() {
   // Update current time
   ++ticks;
 
+  check_canaries(); // seems useless
+    
   // Update display
   if (consoletype == CONSOLE_MEMVIEWER) {
     memshow();

@@ -30,6 +30,10 @@ void process_main() {
             *heap_top = p;      /* check we have write access to new page */
             heap_top += PAGESIZE;
         }
+	if (rand(0, ALLOC_SLOWDOWN - 1) < p) {
+	  sys_corrupt();
+	  printf("pid: %i", sys_getpid());
+        }
         sys_yield();
         if (rand() < RAND_MAX / 32) {
             sys_pause();

@@ -15,6 +15,7 @@ struct yieldstate;
 struct proc_loader;
 struct elf_program;
 #define PROC_RUNNABLE 1
+#define CANARY_VALUE 0x16101610
 
 
 // kernel.hh
@@ -77,9 +78,13 @@ struct __attribute__((aligned(4096))) proc {
 
     inline irqstate lock_pagetable_read();
     inline void unlock_pagetable_read(irqstate& irqs);
+  
+    void check_canary();
 
  private:
     static int load_segment(const elf_program& ph, proc_loader& ld);
+
+  int canary = CANARY_VALUE;
 };
 
 #define NPROC 16
