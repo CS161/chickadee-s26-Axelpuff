@@ -262,41 +262,44 @@ uintptr_t proc::syscall(regstate* regs) {
 
 // simple helper functions
 
+#define OOM_ERROR -1 // idk
+#define OOP_ERROR -1 // idk
+
 // CALLER MUST HOLD `ptable_lock`!!!
 int find_free_pid() {
   // avoid pid 0
-  for (int pid = 1; pid != MAXNPROC; ++pid) {
-    if (ptable[pid].state == P_FREE) {
+  for (int pid = 1; pid != NPROC; ++pid) {
+    if (!ptable[pid]) {
       return pid;
     }
   }
   return OOM_ERROR; // is this the correct error?
 }
 
-void kfree_pagetable(x86_64_pagetable *pagetable)
-{
-  for (ptiter it(pagetable); it.va() < MEMSIZE_VIRTUAL; it.next())
-    {
-      kfree(reinterpret_cast<void *>(it.pa()));
-    }
-  kfree(pagetable);
-}
+// void kfree_pagetable(x86_64_pagetable *pagetable)
+// {
+//   for (ptiter it(pagetable); it.va() < MEMSIZE_VIRTUAL; it.next())
+//     {
+//       kfree(reinterpret_cast<void *>(it.pa()));
+//     }
+//   kfree(pagetable);
+// }
 
 // kfree_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
 //    Frees all process memory from PROC_START_ADDR up to max_addr,
 //    in `pagetable`, EXCLUDING max_addr
 
-void kfree_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
-{
-  for (uintptr_t addr = PROC_START_ADDR; addr < max_addr; addr += PAGESIZE)
-    {
-      vmiter it = vmiter(pagetable, addr);
-      if (it.user())
-        {
-	  kfree(reinterpret_cast<void *>(it.pa()));
-        }
-    }
-}
+// void kfree_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
+// {
+//   for (uintptr_t addr = PROC_START_ADDR; addr < max_addr; addr += PAGESIZE)
+//     {
+//       vmiter it = vmiter(pagetable, addr);
+//       if (it.user())
+//         {
+// 	  kfree(reinterpret_cast<void *>(it.pa()));
+//         }
+//     }
+// }
 
 // proc::syscall_fork(regs)
 //    Handle fork system call.
@@ -304,16 +307,6 @@ void kfree_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
 // !!! need to fix all the stupid ahh formatting from my old pset
 
 int proc::syscall_fork(regstate* regs) {
-  // Find an available process slot (pid?)
-  // -> move this to later point and within a special block
-  spinlock_guard guard(ptable_lock);
-  int pid = find_free_pid();
-  if (pid == -1)
-    {
-      return OOP_ERROR; // technically not out of memory but similar
-    }
-
-  // copy section of pagetable before PROC_START_ADDR
   // initialize process page table
   x86_64_pagetable *child_pagetable = knew_pagetable();
   if (!child_pagetable)
@@ -321,58 +314,74 @@ int proc::syscall_fork(regstate* regs) {
       return OOM_ERROR;
     }
 
+  // copy process code and data
   uintptr_t addr = 0;
   for (; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE)
     {
-      vmiter it(current->pagetable, addr);
-      if (it.writable())
+      vmiter it(this, addr);
+      	  log_printf("Looking at %p\n", it.va());
+      if (it.writable() && addr != CONSOLE_ADDR)
         {
+	  assert(it.user());
 	  // alloc new physical memory for copy of parent process data
-	  void *pa = kalloc(PAGESIZE);
-	  if (pa == nullptr)
-            {
-	      goto cleanup_alloced_memory;
-            }
+	  void* pa = kalloc(PAGESIZE);
+	  // if (!pa)
+          //   {
+	  //     goto cleanup_alloced_memory;
+          //   }
 	  int r = vmiter(child_pagetable, it.va()).try_map(pa, it.perm());
-	  if (r != 0)
-            {
-	      kfree(pa);
-	      goto cleanup_alloced_memory;
-            }
+	  // if (r != 0)
+          //   {
+	  //     kfree(pa);
+	  //     goto cleanup_alloced_memory;
+          //   }
+	  log_printf("Copying %p\n", it.va());
 	  memcpy(pa, reinterpret_cast<void *>(it.pa()), PAGESIZE);
         }
       else if (it.user())
         {
+	  log_printf("Linking %p\n", it.va());
 	  // copy read-only segments
 	  int r = vmiter(child_pagetable, it.va()).try_map(it.pa(), it.perm());
-	  if (r != 0)
-            {
-	      goto cleanup_alloced_memory;
-            }
+	  // if (r != 0)
+          //   {
+	  //     goto cleanup_alloced_memory;
+          //   }
 	  // increment ref count (this helps preserve the read-only data when
 	  // one process that uses it frees)
-	  int pageno = it.pa() / PAGESIZE;
-	  physpages[pageno].refcount++;
+	  // int pageno = it.pa() / PAGESIZE;
+	  // physpages[pageno].refcount++;
         }
     }
 
   // init new ptable entry
-  // (this is after the page table allocation so we don't have to clean this up too
-  // if the pagetable allocation fails)
-  init_process(&ptable[pid], 0);
-  ptable[pid].pagetable = child_pagetable;
-  ptable[pid].regs = current->regs;
-  ptable[pid].regs.reg_rax = 0;
-  ptable[pid].state = P_RUNNABLE;
-
+  int pid = -2;
+  proc* p;
+  { 
+    spinlock_guard guard(ptable_lock);
+    pid = find_free_pid();
+    if (pid == -1) {
+      return OOP_ERROR; // technically not out of memory but similar
+    }
+   p = knew<proc>();
+   p->id_ = pid;
+   p->init_user(child_pagetable);
+   *(p->regs_) = *(this->regs_); // ??? ok?
+   p->regs_->reg_rax = 0;    
+   ptable[pid] = p;
+  }
+  assert(pid >= 0);
+  // add to run queue
+  cpus[pid % ncpu].enqueue(p);
   // return child pid to parent
   return pid;
 
- cleanup_alloced_memory:
-  // clearn up
-  kfree_process_memory(child_pagetable, addr);
-  kfree_pagetable(child_pagetable);
-  return OOM_ERROR;
+
+ // cleanup_alloced_memory:
+ //  // clearn up
+ //  kfree_process_memory(child_pagetable, addr);
+ //  kfree_pagetable(child_pagetable);
+ //  return OOM_ERROR;
 }
 
 
