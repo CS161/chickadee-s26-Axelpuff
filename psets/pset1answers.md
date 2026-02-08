@@ -34,5 +34,16 @@ Answers to written questions
 6. Given that the OS runs with X CPUs, there are X+1 periods. This means that one of these early pages missing from the viewer is allocated for each CPU. X - 1 of the periods are before the page table and the last 2 are immediately after the page table, separated by one normal page allocation. (These missing pages in the viewer really threw me off in A part 1.) The extra period on top of the CPU periods is the array `v_` allocated *inside* the `memusage::refresh()` function call.
 7. After a lot of thinking, I figured out that a reasonable implementation would be to have memusage iterate through the CPUs the same way it does the processes, since the CPU idle tasks aren't listed anywhere else. I used `kptr2pa` on the `idle_task_` pointers and the `v_` pointer in order to mark them with `f_kernel` so that they would have the appropriate flags.
 
+## C.
+- (boot freebie)
+- Syscall: when a process uses a `syscall` instruction, `syscall_entry` changes %rsp to point to the kernel stack and sets up the kernel stack before entering into C++ to handle the syscall.
+- Synchronous exception: handled similarly to `syscall`.
+- Asynchronous exception: the CPU gets kicked over to a specific non-process CPU stack defined at boot time, so it has to set up a kernel task stack before handling the exception as before.
+- Initializing a new process' stack: (see `resume_regstate`).
+- Kernel voluntary yield
+- Asynchronous kernel exception
+
+- (?) Initializing a new CPU stack (`ap_entry`): 
+
 Grading notes
 -------------
