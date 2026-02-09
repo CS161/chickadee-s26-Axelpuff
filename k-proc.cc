@@ -72,6 +72,11 @@ void proc::init_kernel(void (*f)()) {
     regs_->reg_rdi = addr;
 }
 
+// !!! comment tba
+
+void proc::stack_check_fail() {
+  panic("Stack check failed\n");
+}
 
 // proc::panic_nonrunnable()
 //    Called when `k-exception.S` tries to run a non-runnable proc.

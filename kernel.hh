@@ -64,6 +64,7 @@ struct __attribute__((aligned(4096))) proc {
     [[noreturn]] void yield_noreturn();
     [[noreturn]] void resume();
     [[noreturn]] void panic_nonrunnable();
+    [[noreturn]] void stack_check_fail();
 
     inline bool resumable() const;
     inline void unblock();
@@ -83,8 +84,6 @@ struct __attribute__((aligned(4096))) proc {
 
  private:
     static int load_segment(const elf_program& ph, proc_loader& ld);
-
-  int canary = CANARY_VALUE;
 };
 
 #define NPROC 16

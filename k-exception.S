@@ -257,16 +257,25 @@ syscall_entry:
         pushq %rbp                     // syscall-time %rbp
         movq %rsp, %rbp
 
+	// try to do canary stuff
+	;; sub 0x8, %rsp
+	;; mov %fs:(0x28), %rax
+	;; mov %rax, -0x8(%rbp)
+	;; xor %rax, %rax
+	
         movq %gs:(8), %rdi
-        leaq 16(%rsp), %rsi
+        leaq 16(%rsp), %rsi	
         call _ZN4proc7syscallEP8regstate
 
         // When `proc::syscall` returns, `%rax` holds the return value.
         // Preserve that, plus all callee-saved registers.
         
-        call _ZN4proc12check_canaryEv
+	// check canary
+	;; mov -0x8(%rbp), %rax
+	;; xor %fs:(0x28), %rax
+	;; jne stack_check_fail
 
-        movq %gs:(8), %rdi             // assert process is runnable
+	movq %gs:(8), %rdi             // assert process is runnable
         cmpl $PROC_RUNNABLE, 24(%rdi)
         jne panic_nonrunnable
 
@@ -282,6 +291,9 @@ syscall_entry:
 
         iretq
 
+stack_check_fail:
+	call _ZN4proc16stack_check_failEv
+	
 
 panic_nonrunnable:
         call _ZN4proc17panic_nonrunnableEv

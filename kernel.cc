@@ -260,10 +260,8 @@ uintptr_t proc::syscall(regstate* regs) {
     return syscall_getusage(regs);
 
   case SYSCALL_CORRUPT: {
-    log_printf("(before) proc %i canary: %i\n", this->id_, this->canary);
     int cool = fact(256);
     log_printf("Look at this cool number: %i\n", cool);
-    log_printf("(after) proc %i canary: %i\n", this->id_, this->canary);
     return 0;
   }
 
@@ -561,25 +559,6 @@ static void memshow() {
   }
 }
 
-[[gnu::noinline]] void proc::check_canary() {
-  assert(this->canary == CANARY_VALUE);
-}
-
-static void check_canaries() {
-  // static unsigned long last_check = 0;
-  // if (last_check != 0 && ticks - last_check < HZ / 25) {
-  //   return;
-  // }
-  // last_check = ticks;
-  
-  for (int pid = 1; pid != NPROC; ++pid) {
-    if (!ptable[pid]) {
-      continue;
-    }
-    ptable[pid]->check_canary();
-  }
-}
-
 // proc::syscall_getusage(regs)
 //  Get system usage stats.
 int proc::syscall_getusage(regstate* regs) {
@@ -613,8 +592,6 @@ void tick() {
   // Update current time
   ++ticks;
 
-  // check_canaries(); // seems useless
-    
   // Update display
   if (consoletype == CONSOLE_MEMVIEWER) {
     memshow();
