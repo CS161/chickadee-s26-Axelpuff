@@ -267,12 +267,12 @@ uintptr_t proc::syscall(regstate* regs) {
     // int cool = fact(256);
     // log_printf("Look at this cool number: %i\n", cool);
       // while (true) {}
-      char cool[32];
-      for (int i = 0; i < 64; i++) {
+      char cool[1];
+      for (int i = 70; i < 80; i++) {
           cool[i] = 0xff;
           log_printf("Changed address %p\n", &cool[i]);
       }
-      while (true) {}
+      // while (true) {}
     return 0;
   }
 
