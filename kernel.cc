@@ -160,13 +160,22 @@ void proc::exception(regstate* regs) {
   // return to interrupted context
 }
 
-int fact(int n) {
-    char test = 0;
-    log_printf("Stack now at: %p\n", &test); // this forces the compiler not to optimize
+int fact(long n) {
+    long test = 0;
+    log_printf("Stack now at: %p\n", &test); // force the compiler not to optimize
   if (n <= 1) {
     return 1;
   }
   return n * fact(n - 1);
+}
+
+// utility to avoid hard-coding the stack bottom canary offset
+[[gnu::noinline]] void* proc::stack_bottom_canary_ptr() {
+    log_printf("ptr: %p\n", &(this->stack_bottom_canary));
+    log_printf("canary value: %i\n", this->stack_bottom_canary);
+    log_printf("ptr2: %p\n", this);
+    log_printf("val2: %i\n", this->canary);
+    return &(this->stack_bottom_canary);
 }
 
 // proc::syscall(regs)
@@ -179,7 +188,9 @@ int fact(int n) {
 uintptr_t proc::syscall(regstate* regs) {
   //log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
     // log_printf("Size of regstate: %zu\n", sizeof(*regs));
-    // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->canary) - reinterpret_cast<uintptr_t>(this));
+    // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->stack_bottom_canary) - reinterpret_cast<uintptr_t>(this));
+    log_printf("canary value: %i\n", this->stack_bottom_canary);
+    assert(this->canary = this->stack_bottom_canary);
 
   // Record most recent user-mode %rip.
   recent_user_rip_ = regs->reg_rip;
@@ -264,14 +275,16 @@ uintptr_t proc::syscall(regstate* regs) {
     return syscall_getusage(regs);
 
   case SYSCALL_CORRUPT: {
+      void* yeah = this->stack_bottom_canary_ptr();
+      log_printf("yeah: %p\n", yeah);
     // int cool = fact(256);
     // log_printf("Look at this cool number: %i\n", cool);
       // while (true) {}
-      char cool[1];
-      for (int i = 70; i < 80; i++) {
-          cool[i] = 0xff;
-          log_printf("Changed address %p\n", &cool[i]);
-      }
+      // char cool[1];
+      // for (int i = 20; i < 30; i++) {
+      //     cool[i] = 0xff;
+      //     log_printf("Changed address %p\n", &cool[i]);
+      // }
       // while (true) {}
     return 0;
   }

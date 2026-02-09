@@ -261,9 +261,9 @@ syscall_entry:
         leaq 16(%rsp), %rsi
         
 	// try to do canary stuff
-        subq $0x8, %rsp
+        subq $0x4, %rsp
 	mov %gs:(0x1c), %rax
-	mov %rax, -0x8(%rbp)
+	mov %rax, -0x4(%rbp)
 	xor %rax, %rax
 	
         call _ZN4proc7syscallEP8regstate
@@ -272,10 +272,24 @@ syscall_entry:
         // Preserve that, plus all callee-saved registers.
         
 	// check canary
-	mov -0x8(%rbp), %rdi
+	mov -0x4(%rbp), %rdi
 	xor %gs:(0x1c), %rdi
         jne stack_check_fail
-        addq $0x8, %rsp
+        addq $0x4, %rsp
+
+        // check proc stack bottom canary
+        pushq %rax        
+        movq %gs:(8), %rdi
+        // leaq 16(%rsp), %rdi        
+        call _ZN4proc23stack_bottom_canary_ptrEv
+        mov %gs:(0x1c), %rdi
+        mov (%rax), %rsi
+        xor %rdi, %rsi
+        // movq $CANARY_VALUE, %rsi
+        // xor %gs:(0x1c), %rdi
+        //jne stack_check_fail
+        popq %rax
+
 
 	movq %gs:(8), %rdi             // assert process is runnable
         cmpl $PROC_RUNNABLE, 24(%rdi)

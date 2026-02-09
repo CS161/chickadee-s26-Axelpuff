@@ -46,6 +46,8 @@ struct __attribute__((aligned(4096))) proc {
     list_links runq_links_;                    // Links for run queue
     int runq_cpu_ = -1;                        // CPU index of recent run queue
 
+    // This member must come last
+    int stack_bottom_canary = CANARY_VALUE;
 
     proc();
     NO_COPY_OR_ASSIGN(proc);
@@ -81,7 +83,7 @@ struct __attribute__((aligned(4096))) proc {
     inline irqstate lock_pagetable_read();
     inline void unlock_pagetable_read(irqstate& irqs);
   
-    void check_canary();
+    void* stack_bottom_canary_ptr();
 
  private:
     static int load_segment(const elf_program& ph, proc_loader& ld);
