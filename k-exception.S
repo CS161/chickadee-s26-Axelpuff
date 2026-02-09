@@ -257,23 +257,25 @@ syscall_entry:
         pushq %rbp                     // syscall-time %rbp
         movq %rsp, %rbp
 
-	// try to do canary stuff
-	;; sub 0x8, %rsp
-	;; mov %fs:(0x28), %rax
-	;; mov %rax, -0x8(%rbp)
-	;; xor %rax, %rax
-	
         movq %gs:(8), %rdi
-        leaq 16(%rsp), %rsi	
+        leaq 16(%rsp), %rsi
+        
+	// try to do canary stuff
+        subq $0x8, %rsp
+	mov %gs:(0x1c), %rax
+	mov %rax, -0x8(%rbp)
+	xor %rax, %rax
+	
         call _ZN4proc7syscallEP8regstate
 
         // When `proc::syscall` returns, `%rax` holds the return value.
         // Preserve that, plus all callee-saved registers.
         
 	// check canary
-	;; mov -0x8(%rbp), %rax
-	;; xor %fs:(0x28), %rax
-	;; jne stack_check_fail
+	mov -0x8(%rbp), %rdi
+	xor %gs:(0x1c), %rdi
+        jne stack_check_fail
+        addq $0x8, %rsp
 
 	movq %gs:(8), %rdi             // assert process is runnable
         cmpl $PROC_RUNNABLE, 24(%rdi)

@@ -6,6 +6,8 @@
 #include "k-devices.hh"
 #include "k-vmiter.hh"
 #include "obj/k-firstprocess.h"
+#include <cinttypes>
+
 
 // kernel.cc
 //
@@ -176,6 +178,8 @@ int fact(int n) {
 
 uintptr_t proc::syscall(regstate* regs) {
   //log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
+    // log_printf("Size of regstate: %zu\n", sizeof(*regs));
+    // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->canary) - reinterpret_cast<uintptr_t>(this));
 
   // Record most recent user-mode %rip.
   recent_user_rip_ = regs->reg_rip;
@@ -260,8 +264,15 @@ uintptr_t proc::syscall(regstate* regs) {
     return syscall_getusage(regs);
 
   case SYSCALL_CORRUPT: {
-    int cool = fact(256);
-    log_printf("Look at this cool number: %i\n", cool);
+    // int cool = fact(256);
+    // log_printf("Look at this cool number: %i\n", cool);
+      // while (true) {}
+      char cool[32];
+      for (int i = 0; i < 64; i++) {
+          cool[i] = 0xff;
+          log_printf("Changed address %p\n", &cool[i]);
+      }
+      while (true) {}
     return 0;
   }
 
