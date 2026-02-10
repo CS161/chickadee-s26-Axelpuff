@@ -34,7 +34,7 @@ struct __attribute__((aligned(4096))) proc {
     regstate* regs_ = nullptr;            //  8: Process's current registers
     yieldstate* yields_ = nullptr;        // 16: Process's current yield state
     std::atomic<int> pstate_ = ps_blank;  // 24: Process state
-    int canary = CANARY_VALUE;            // 28: Canary value
+    // int canary = CANARY_VALUE;            // 28: Canary value
 
     x86_64_pagetable* pagetable_ = nullptr;    // Process's page table
     uintptr_t recent_user_rip_ = 0;            // Most recent user-mode %rip

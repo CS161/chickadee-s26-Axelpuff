@@ -169,12 +169,26 @@ int fact(long n) {
   return n * fact(n - 1);
 }
 
+void descender(int n) {
+    char test;
+    log_printf("Stack now at: %p\n", &test); // force the compiler not to optimize
+    if (n == 0) {
+        char big[16];
+        for (int i = 0; i < 16; i++) {
+            big[i] = 0;
+            log_printf("Modified: %p\n", &big[i]); // force the compiler not to optimize
+        }
+        return;
+    }
+    descender(n - 1);
+}
+
 // utility to avoid hard-coding the stack bottom canary offset
 [[gnu::noinline]] void* proc::stack_bottom_canary_ptr() {
-    log_printf("ptr: %p\n", &(this->stack_bottom_canary));
-    log_printf("canary value: %i\n", this->stack_bottom_canary);
-    log_printf("ptr2: %p\n", this);
-    log_printf("val2: %i\n", this->canary);
+    // log_printf("ptr: %p\n", &(this->stack_bottom_canary));
+    // log_printf("canary value: %i\n", this->stack_bottom_canary);
+    // log_printf("ptr2: %p\n", this);
+    // log_printf("val2: %i\n", this->canary);
     return &(this->stack_bottom_canary);
 }
 
@@ -190,7 +204,6 @@ uintptr_t proc::syscall(regstate* regs) {
     // log_printf("Size of regstate: %zu\n", sizeof(*regs));
     // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->stack_bottom_canary) - reinterpret_cast<uintptr_t>(this));
     log_printf("canary value: %i\n", this->stack_bottom_canary);
-    assert(this->canary = this->stack_bottom_canary);
 
   // Record most recent user-mode %rip.
   recent_user_rip_ = regs->reg_rip;
@@ -275,17 +288,13 @@ uintptr_t proc::syscall(regstate* regs) {
     return syscall_getusage(regs);
 
   case SYSCALL_CORRUPT: {
-      void* yeah = this->stack_bottom_canary_ptr();
-      log_printf("yeah: %p\n", yeah);
-    // int cool = fact(256);
-    // log_printf("Look at this cool number: %i\n", cool);
-      // while (true) {}
-      // char cool[1];
-      // for (int i = 20; i < 30; i++) {
-      //     cool[i] = 0xff;
-      //     log_printf("Changed address %p\n", &cool[i]);
-      // }
-      // while (true) {}
+      char test;
+      uintptr_t target = reinterpret_cast<uintptr_t>(&test) - PROCSTACK_SIZE + 0x125;
+      for (int i = 0; i < 150; i++) {
+          char* ptr = reinterpret_cast<char*>(target + i);
+          log_printf("Wiped %p\n", ptr);
+          *ptr = 0;
+      }
     return 0;
   }
 
