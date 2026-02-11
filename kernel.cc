@@ -160,15 +160,6 @@ void proc::exception(regstate* regs) {
   // return to interrupted context
 }
 
-int fact(long n) {
-    long test = 0;
-    log_printf("Stack now at: %p\n", &test); // force the compiler not to optimize
-  if (n <= 1) {
-    return 1;
-  }
-  return n * fact(n - 1);
-}
-
 void descender(int n) {
     char test;
     log_printf("Stack now at: %p\n", &test); // force the compiler not to optimize
@@ -203,7 +194,7 @@ uintptr_t proc::syscall(regstate* regs) {
   //log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
     // log_printf("Size of regstate: %zu\n", sizeof(*regs));
     // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->stack_bottom_canary) - reinterpret_cast<uintptr_t>(this));
-    log_printf("canary value: %i\n", this->stack_bottom_canary);
+    // log_printf("canary value: %i\n", this->stack_bottom_canary);
 
   // Record most recent user-mode %rip.
   recent_user_rip_ = regs->reg_rip;
@@ -331,21 +322,22 @@ int find_free_pid() {
 //   kfree(pagetable);
 // }
 
-// kfree_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
-//    Frees all process memory from PROC_START_ADDR up to max_addr,
-//    in `pagetable`, EXCLUDING max_addr
+// cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
+//    Frees all process memory from 0 up to max_addr,
+//    in `pagetable`, EXCLUDING max_addr, and then frees `pagetable` itself
 
-// void kfree_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
-// {
-//   for (uintptr_t addr = PROC_START_ADDR; addr < max_addr; addr += PAGESIZE)
-//     {
-//       vmiter it = vmiter(pagetable, addr);
-//       if (it.user())
-//         {
-// 	  kfree(reinterpret_cast<void *>(it.pa()));
-//         }
-//     }
-// }
+void cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
+{
+  for (uintptr_t addr = 0; addr < max_addr; addr += PAGESIZE)
+    {
+      vmiter it = vmiter(pagetable, addr);
+      if (it.user())
+        {
+	  kfree(reinterpret_cast<void *>(it.pa()));
+        }
+    }
+  delete pagetable;
+}
 
 // proc::syscall_fork(regs)
 //    Handle fork system call.
@@ -363,35 +355,37 @@ int proc::syscall_fork(regstate* regs) {
   // copy process code and data
   uintptr_t addr = 0;
   for (; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE)
-    {
-      vmiter it(this, addr);
-      if (it.writable() && addr != CONSOLE_ADDR)
-        {
-	  assert(it.user());
-	  // alloc new physical memory for copy of parent process data
-	  void* pa = kalloc(PAGESIZE);
-	  // if (!pa)
-          //   {
-	  //     goto cleanup_alloced_memory;
-          //   }
-	  int r = vmiter(child_pagetable, it.va()).try_map(pa, it.perm());
-	  // if (r != 0)
-          //   {
-	  //     kfree(pa);
-	  //     goto cleanup_alloced_memory;
-          //   }
-	  memcpy(pa, reinterpret_cast<void *>(addr), PAGESIZE);
-        }
-      else if (it.user())
-        {
-	  // copy read-only segments
-	  int r = vmiter(child_pagetable, it.va()).try_map(it.pa(), it.perm());
-	  // if (r != 0)
-          //   {
-	  //     goto cleanup_alloced_memory;
-          //   }
-	  // increment ref count (this helps preserve the read-only data when
-	  // one process that uses it frees)
+      {
+          vmiter it(this, addr);
+          if (it.writable() && addr != CONSOLE_ADDR)
+              {
+                  assert(it.user());
+                  // alloc new physical memory for copy of parent process data
+                  void* pa = kalloc(PAGESIZE);
+                  if (!pa)
+                      {
+                          cleanup_process_memory(child_pagetable, addr);
+                          return OOM_ERROR;
+                      }
+                  int r = vmiter(child_pagetable, it.va()).try_map(pa, it.perm());
+                  if (r != 0)
+                      {
+                          kfree(pa);
+                          cleanup_process_memory(child_pagetable, addr);
+                          return OOM_ERROR;
+                      }
+                  memcpy(pa, reinterpret_cast<void *>(addr), PAGESIZE);
+              }
+          else if (it.user()) {
+              // copy read-only segments
+              int r = vmiter(child_pagetable, it.va()).try_map(it.pa(), it.perm());
+              if (r != 0)
+                  {
+                      cleanup_process_memory(child_pagetable, addr);
+                      return OOM_ERROR;
+                  }
+              // increment ref count (this helps preserve the read-only data when
+              // one process that uses it frees)
 	  // int pageno = it.pa() / PAGESIZE;
 	  // physpages[pageno].refcount++;
         }
@@ -417,13 +411,6 @@ int proc::syscall_fork(regstate* regs) {
   cpus[pid % ncpu].enqueue(p);
   // return child pid to parent
   return pid;
-
-
- // cleanup_alloced_memory:
- //  // clearn up
- //  kfree_process_memory(child_pagetable, addr);
- //  kfree_pagetable(child_pagetable);
- //  return OOM_ERROR;
 }
 
 

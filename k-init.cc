@@ -202,7 +202,12 @@ memrangeset<16> physical_ranges(0x100000000UL);
 
 void init_physical_ranges() {
     // [0, MEMSIZE_PHYSICAL) starts out available
-    physical_ranges.set(0, MEMSIZE_PHYSICAL + 0x200000, mem_available);
+    physical_ranges.set(0, MEMSIZE_PHYSICAL, mem_available);
+    auto range = physical_ranges.end();
+    range--;
+    assert(range != physical_ranges.end());
+    log_printf("End of available memory: %p\n", range->last());
+    assert(range->last() / PAGESIZE == MEMSIZE_PHYSICAL / 2); // why tf is it half????
     // 0 page is reserved (because nullptr)
     physical_ranges.set(0, PAGESIZE, mem_reserved);
     // I/O memory is reserved (except the console is `mem_console`)
