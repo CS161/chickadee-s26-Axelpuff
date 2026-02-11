@@ -202,7 +202,7 @@ memrangeset<16> physical_ranges(0x100000000UL);
 
 void init_physical_ranges() {
     // [0, MEMSIZE_PHYSICAL) starts out available
-    physical_ranges.set(0, MEMSIZE_PHYSICAL, mem_available);
+    physical_ranges.set(0, MEMSIZE_PHYSICAL + 0x200000, mem_available);
     // 0 page is reserved (because nullptr)
     physical_ranges.set(0, PAGESIZE, mem_reserved);
     // I/O memory is reserved (except the console is `mem_console`)
