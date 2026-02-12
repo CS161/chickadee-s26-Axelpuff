@@ -23,7 +23,7 @@ const int max_order = 21;
 // };
 
 struct page_entry {
-    bool allocatable; // whether the page is in a range marked as available (i.e. not reserved or kernel)
+    bool allocatable = false; // whether the page is in a range marked as available (i.e. not reserved or kernel)
     bool free;
     int order;
     list_links link_;
@@ -82,7 +82,7 @@ void validate_free_lists() {
              entry != nullptr;
              entry = free_lists[order].next(entry)) {
             if (entry) {
-                log_printf("Found free list with entry of value %zu\n", addr_from_entry(entry));
+                // log_printf("Found free list with entry of value %zu\n", addr_from_entry(entry));
                 validate_free(addr_from_entry(entry));
             }
         }
@@ -91,50 +91,74 @@ void validate_free_lists() {
 
 // Helper functions for init_kalloc
 
-void mark_range(const memrange* range, bool allocatable) {
+void mark_range(const memrange* range) {
     for (uintptr_t i = range->first(); i < range->last(); i += PAGESIZE) {
         assert((i & PAGEOFFMASK) == 0);
-        if (allocatable) {
-            pages[i / PAGESIZE].allocatable = true;
-            pages[i / PAGESIZE].free = true;
-            pages[i / PAGESIZE].order = -1;
-        } else {
-            // ??? for some reason this detonates the memfile loader so I guess `allocatable` is a useless field for now
-            // pages[i / PAGESIZE].allocatable = false;
-            // all other members should never be accessed in this case
-        }
+        pages[i / PAGESIZE].allocatable = true;
+        pages[i / PAGESIZE].free = true;
+        pages[i / PAGESIZE].order = -1;
     }
 }
 
 void make_order_blocks(const memrange* range) {
     // Need to freaking round up to the next address that is a power of 2, check if it is within the range, then take the largest order of 2 which fits within available space and also evenly divides the new starting address.
-    uintptr_t aligned_addr = round_up_pow2(range->first());
-    // log_printf("order aligned addr %p\n", aligned_addr);
-    if (aligned_addr < range->last()) {
-        assert(range->last() - aligned_addr <= range->size());
-        int space_limited_order = msb(range->last() - aligned_addr) - 1;
-        int addr_limited_order = msb(aligned_addr) - 1;
+    uintptr_t addr = range->first();
+    while (addr < range->last()) {
+        assert((addr & PAGEOFFMASK) == 0);
+        int space_limited_order = msb(range->last() - addr) - 1;
+        int addr_limited_order = lsb(addr) - 1; // least significant bit = order of 2 this divides evenly by
         int order = min(space_limited_order, addr_limited_order);
         order = min(order, max_order);
-        // log_printf("space order %u\n", space_limited_order);
-        // log_printf("addr order %u\n", addr_limited_order);
+        log_printf("space order %u\n", space_limited_order);
+        log_printf("addr order %u\n", addr_limited_order);
         log_printf("found existent range of order %u\n", order);
         if (order >= min_order) {
             // log_printf("starting at: %p\n", aligned_addr);
             // log_printf("dividing by: %p\n", 1u << order);
-            assert(aligned_addr % (1u << order) == 0);
-            log_printf("found existent range of size %zu pages\n", range->size() / PAGESIZE);
-            assert((aligned_addr & PAGEOFFMASK) == 0);
+            log_printf("found available block of size %zu pages\n", (1u << order) / PAGESIZE);
+            log_printf("Block starts at: %zu\n", addr);
+            log_printf("%zu\n", addr % (1u << order));
+            assert(addr % (1u << order) == 0);
             // Update free lists
-            log_printf("Block starts at: %zu\n", aligned_addr);
-            page_entry* entry = &pages[aligned_addr / PAGESIZE];
+            page_entry* entry = &pages[addr / PAGESIZE];
             free_lists[order].push_front(entry);
             // Update pages array
             entry->order = order;
+
+            addr += (1u << order);
         } else {
-            log_printf("Order too small\n");
+            panic("Order too small\n");
         }
     }
+    // uintptr_t aligned_addr = round_up_pow2(range->first());
+    // // log_printf("order aligned addr %p\n", aligned_addr);
+    // if (aligned_addr < range->last()) {
+    //     assert(range->last() - aligned_addr <= range->size());
+    //     int space_limited_order = msb(range->last() - aligned_addr) - 1;
+    //     int addr_limited_order = msb(aligned_addr) - 1;
+    //     int order = min(space_limited_order, addr_limited_order);
+    //     order = min(order, max_order);
+    //     // log_printf("space order %u\n", space_limited_order);
+    //     // log_printf("addr order %u\n", addr_limited_order);
+    //     // log_printf("found existent range of order %u\n", order);
+    //     if (order >= min_order) {
+    //         // log_printf("starting at: %p\n", aligned_addr);
+    //         // log_printf("dividing by: %p\n", 1u << order);
+    //         assert(aligned_addr % (1u << order) == 0);
+    //         log_printf("found available range of size %zu pages\n", range->size() / PAGESIZE);
+    //         assert((aligned_addr & PAGEOFFMASK) == 0);
+    //         // Update free lists
+    //         log_printf("Block starts at: %zu\n", aligned_addr);
+    //         page_entry* entry = &pages[aligned_addr / PAGESIZE];
+    //         free_lists[order].push_front(entry);
+    //         // Update pages array
+    //         entry->order = order;
+    //     } else {
+    //         log_printf("Order too small\n");
+    //     }
+    // } else {
+    //     log_printf("Oops! want to make big range but aligned addr is %p while end of range is %p\n", aligned_addr, range->last());
+    // }
 }
 
 
@@ -145,19 +169,19 @@ void init_kalloc() {
     // log_printf("order of physical memory: %zu\n", msb(MEMSIZE_PHYSICAL) - 1);
     // iterate using physical ranges, increment both total_physpages and allocated_pages
     auto range = physical_ranges.begin();
-    while (range != physical_ranges.end()) {
+    while (range != physical_ranges.end() && range->first() < MEMSIZE_PHYSICAL
+           ) {
+        log_printf("Range start: %p\n", range->first());
         assert((range->size() & PAGEOFFMASK) == 0); // assert assumption that ranges are in size of pages
         size_t range_pgsz = range->size() / PAGESIZE;
         if (range->type() == mem_nonexistent) {
-            // log_printf("Woah! I found a nonexistent range of size %zu pages\n", range_pgsz);
-            // mark_range(range, false);
+            log_printf("Woah! I found a nonexistent range of size %zu pages\n", range_pgsz);
         } else if (range->type() == mem_available) {            
-            mark_range(range, true); // for now this will be true even for pages where order alignment prevents them from being used
+            mark_range(range); // for now this will be true even for pages where order alignment prevents them from being used
             make_order_blocks(range);
         } else {
-            // log_printf("found reserved range of size %zu pages\n", range_pgsz);
+            log_printf("found reserved range of size %zu pages\n", range_pgsz);
             allocated_pages += range_pgsz;
-            // mark_range(range, false);
         }
         total_physpages += range_pgsz; // may lead to size mismatch with actual usable physical memory (since the available ranges need to start at powers of 2)
         // move to next range
