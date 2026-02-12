@@ -7,10 +7,10 @@ Answers to written questions
 ----------------------------
 
 1. The maximum size it supports is PAGESIZE (it immediately returns `nullptr` if `sz > PAGESIZE`).
-2. The first address it returns is 0xffff800000001000. This kernel pointer corresponds to the first free physical memory returned by `physical_ranges.find`. The first three pages (excluding the zero page) are not reserved/kernel memory, whereas the next six are.
+2. (???) The first address it returns is 0xffff800000001000. This makes sense because the 0xffff indicates that it is in high canonical memory, making it a kernel pointer.
 3. The highest address printed is 0xffff8000001ff000.
 4. It returns high canonical addresses (they start at 0xffff8000) that are not high enough to be kernel text. The line `ptr = pa2kptr<void*>(next_free_pa);` converts the physical address (pa) provided by `physical_ranges` into a kernel pointer (kptr).
-5. (???) Changing MEMSIZE_PHYSICAL to 0x300000UL in `kernel.hh` seems to work (although this isn't a .cc file).
+5. One way to do this is to go into `k-init.cc` and change `physical_ranges.set(0, MEMSIZE_PHYSICAL, mem_available);` to add 0x100000 to the second argument.
 6.
 ```
     while (next_free_pa != physical_ranges.limit()) {
@@ -22,11 +22,11 @@ Answers to written questions
         next_free_pa += PAGESIZE;
     }
 ```
-7. (???) The loop using `find()` may be faster, since it iterates by moving to the next range instead of iterating over all the previous pages.
+7. The loop using `find()` may be more efficient since it completely skips over unavailable ranges rather than iterating through every page.
 8. Without `page_lock`, there could be a race condition where a second thread re-allocates the page at `next_free_pa` before the first thread that allocated it has the chance to increment `next_free_pa`.
 
 ## B.
-1. (???) Line 86: `mark(pa, f_kernel);`
+1. Inside the loop that marks addresses with range type `mem_kernel`. Line 86: `mark(pa, f_kernel);`
 2. Line 96: `mark(ka2pa(p), f_kernel | f_process(pid));`
 3. All page table pages need to be treated as protected memory. If a process could modify its own page table, it could change the physical addresses to new ones outside of what the kernel assigned it and violate process isolation. On the other hand, the process' virtual memory accessed using `vmiter` is what the process is supposed to be able to access and modify.
 4. It should be `mem_kernel` since the process table exists in kernel memory.
@@ -40,7 +40,7 @@ Answers to written questions
 - Synchronous exception: handled similarly to `syscall`.
 - Asynchronous exception: the CPU gets kicked over to a specific non-process CPU stack defined at boot time, so it has to set up a kernel task stack before handling the exception as before.
 - Initializing a new process' stack: (see `resume_regstate`).
-- Kernel voluntary yield
+- Kernel voluntary yield (`jmp _ZN8cpustate8scheduleEv`)
 - Asynchronous kernel exception
 
 - (?) Initializing a new CPU stack (`ap_entry`): 
