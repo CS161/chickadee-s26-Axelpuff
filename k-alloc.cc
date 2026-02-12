@@ -2,7 +2,8 @@
 #include "k-lock.hh"
 
 static spinlock page_lock;
-static uintptr_t next_free_pa;
+// static uintptr_t next_free_pa;
+
 // should both be initialized in init_kalloc
 // !!! need to be protected by lock
 static size_t total_physpages = 0;
@@ -97,9 +98,9 @@ void mark_range(const memrange* range, bool allocatable) {
             pages[i / PAGESIZE].allocatable = true;
             pages[i / PAGESIZE].free = true;
             pages[i / PAGESIZE].order = -1;
-            // pages[i / PAGESIZE].link_ = nullptr;
         } else {
-            pages[i / PAGESIZE].allocatable = false;
+            // ??? for some reason this detonates the memfile loader so I guess `allocatable` is a useless field for now
+            // pages[i / PAGESIZE].allocatable = false;
             // all other members should never be accessed in this case
         }
     }
@@ -149,14 +150,14 @@ void init_kalloc() {
         size_t range_pgsz = range->size() / PAGESIZE;
         if (range->type() == mem_nonexistent) {
             // log_printf("Woah! I found a nonexistent range of size %zu pages\n", range_pgsz);
-            mark_range(range, false);
+            // mark_range(range, false);
         } else if (range->type() == mem_available) {            
             mark_range(range, true); // for now this will be true even for pages where order alignment prevents them from being used
             make_order_blocks(range);
         } else {
             // log_printf("found reserved range of size %zu pages\n", range_pgsz);
             allocated_pages += range_pgsz;
-            mark_range(range, false);
+            // mark_range(range, false);
         }
         total_physpages += range_pgsz; // may lead to size mismatch with actual usable physical memory (since the available ranges need to start at powers of 2)
         // move to next range
@@ -166,7 +167,7 @@ void init_kalloc() {
     log_printf("Final checks:\n");
     for (uintptr_t pg = 0; pg < MEMSIZE_PHYSICAL / PAGESIZE; pg++) {
         if (pages[pg].allocatable && pages[pg].order != -1) {
-            assert(pages[pg].free);
+            // assert(pages[pg].free);
             log_printf("Found page of order %u\n", pages[pg].order);
             log_printf("at page %zu, %p\n", pg, pg * PAGESIZE);
         }
@@ -188,116 +189,157 @@ size_t kget_allocated_physpages() {
     return allocated_pages;
 }
 
-// void split_buddy(uintptr_t addr) {
-//     // SPLIT:
-//     //   (to be super paranoid: check that every page within this buddy apart from the first is allocatable, free, and order == -1)
-//     validate_free(addr);
+void split_buddy(uintptr_t addr) {
+    // SPLIT:
+    //   (to be super paranoid: check that every page within this buddy apart from the first is allocatable, free, and order == -1)
+    validate_free(addr);
     
-//     //  (pages) deincrement this buddy's order
-//     page_entry first_buddy_header = pages[addr / PAGESIZE];
-//     int new_order = first_buddy_header.order - 1;
-//     assert(new_order >= min_order);
-//     //  (pages) find the midway point, assert allocatable, free, and order == -1, change order to this buddy's order
-//     uintptr_t second_buddy_addr = addr + (1u << new_order);
-//     page_entry second_buddy_header = pages[second_buddy_addr / PAGESIZE];
-//     assert(second_buddy_header.allocatable
-//            && second_buddy_header.free
-//            && second_buddy_header.order == -1
-//            && !second_buddy_header.list_entry);
-//     first_buddy_header.order = new_order;
-//     second_buddy_header.order = new_order;
+    //  (pages) deincrement this buddy's order
+    page_entry* first_buddy_header = &pages[addr / PAGESIZE];
+    int new_order = first_buddy_header->order - 1;
+    assert(new_order >= min_order);
+    //  (pages) find the midway point, assert allocatable, free, and order == -1, change order to this buddy's order
+    uintptr_t second_buddy_addr = addr + (1u << new_order);
+    page_entry* second_buddy_header = &pages[second_buddy_addr / PAGESIZE];
+    assert(second_buddy_header->allocatable
+           && second_buddy_header->free
+           && second_buddy_header->order == -1);
+    first_buddy_header->order = new_order;
+    second_buddy_header->order = new_order;
     
-//     //  remove addr from list; add addr and midway point to list of order below
-//     free_list_entry* first_list_entry = first_buddy_header.list_entry;
-//     free_list_entry* second_list_entry = knew<free_list_entry>(second_buddy_addr);
-//     first_list_entry->link_.erase(); // remove entry from old order's list
-//     free_lists[new_order].push_front(first_list_entry);
-//     free_lists[new_order].push_front(second_list_entry);
-//     second_buddy_header.list_entry = second_list_entry;
-//     validate_free(addr);
-// }
+    //  remove addr from list; add addr and midway point to list of order below
+    // free_list_entry* first_list_entry = first_buddy_header.list_entry;
+    // free_list_entry* second_list_entry = knew<free_list_entry>(second_buddy_addr);
+    first_buddy_header->link_.erase(); // remove entry from old order's list
+    free_lists[new_order].push_front(first_buddy_header);
+    free_lists[new_order].push_front(second_buddy_header);
+    validate_free(addr);
+}
 
-// void take_buddy(uintptr_t addr) {
-//     // TAKE:
-//     // mark all pages within buddy as non-free, remove ptr from free list, then return ptr
-//     // increment allocated_pages
-//     validate_free(addr);
+void take_buddy(uintptr_t addr) {
+    // TAKE:
+    // mark all pages within buddy as non-free, remove ptr from free list, then return ptr
+    // increment allocated_pages
+    validate_free(addr);
     
-//     page_entry header = pages[addr / PAGESIZE];
-//     header.free = false;
+    page_entry* header = &pages[addr / PAGESIZE];
+    header->free = false;
 
-//     size_t block_sz_bytes = (1u << header.order);
-//     size_t block_sz_pages = block_sz_bytes / PAGESIZE;
-//     for (size_t pg_offset = 1; pg_offset < block_sz_pages; pg_offset++) {
-//         pages[(addr / PAGESIZE) + pg_offset].free = false;
-//     }
+    size_t block_sz_bytes = (1u << header->order);
+    size_t block_sz_pages = block_sz_bytes / PAGESIZE;
+    for (size_t pg_offset = 1; pg_offset < block_sz_pages; pg_offset++) {
+        pages[(addr / PAGESIZE) + pg_offset].free = false;
+    }
     
-//     free_list_entry* list_entry = header.list_entry;
-//     list_entry->link_.erase();
-//     delete list_entry;
+    header->link_.erase(); // remove from free list
+    
+    log_printf("I'd like to mark %p\n", addr);
         
-//     // tell sanitizers the allocated page is accessible
-//     asan_mark_memory(ka2pa(reinterpret_cast<void*>(addr)), block_sz_bytes, false);
-//     // initialize to `int3`
-//     memset(reinterpret_cast<void*>(addr), 0xCC, block_sz_bytes);
-//     // update stats
-//     allocated_pages += block_sz_pages;
-// }
+    // tell sanitizers the allocated page is accessible
+    asan_mark_memory(addr, block_sz_bytes, false);
+    // initialize to `int3`
+    memset(pa2kptr<void*>(addr), 0xCC, block_sz_bytes);
+    // update stats
+    allocated_pages += block_sz_pages;
+}
 
-// // kalloc(sz)
-// //    Allocate and return a pointer to at least `sz` contiguous bytes of
-// //    memory. Returns `nullptr` if `sz == 0` or on failure.
-// //
-// //    The caller should initialize the returned memory before using it.
-// //    The handout allocator sets returned memory to 0xCC (this corresponds
-// //    to the x86 `int3` instruction and may help you debug).
-// //
-// //    If `sz` is a multiple of `PAGESIZE`, the returned pointer is guaranteed
-// //    to be page-aligned.
-// //
-// //    The handout code does not free memory and allocates memory in units
-// //    of pages.
+// kalloc(sz)
+//    Allocate and return a pointer to at least `sz` contiguous bytes of
+//    memory. Returns `nullptr` if `sz == 0` or on failure.
+//
+//    The caller should initialize the returned memory before using it.
+//    The handout allocator sets returned memory to 0xCC (this corresponds
+//    to the x86 `int3` instruction and may help you debug).
+//
+//    If `sz` is a multiple of `PAGESIZE`, the returned pointer is guaranteed
+//    to be page-aligned.
+//
+//    The handout code does not free memory and allocates memory in units
+//    of pages.
+void* kalloc(size_t sz) {    
+    if (sz == 0 || sz > PAGESIZE) {
+        return nullptr;
+    }
+
+    auto irqs = page_lock.lock();
+    uintptr_t addr = 0;
+
+    // iterate over free_lists from target_order to max_order (inclusive)
+    int target_order = max(msb(sz) - 1, min_order); // require at least min_order
+    int order = target_order;
+    while (order <= max_order) {
+        //  if we find a non-empty free list, set ptr to the first list entry and break
+        page_entry* entry = free_lists[order].front();
+        if (entry) {
+            addr = addr_from_entry(entry);
+            break;
+        }
+        log_printf("no blocks of order %i\n...", order);
+        order++;
+    }
+    // if ptr is still null, return ptr (null)
+    if (!addr) {
+        log_printf("Out of memory\n");
+        return nullptr;
+    }
+    // if order is greater than target, split buddies!!!
+    //  deincrement order, rinse and repeat until order == target (should always work)
+    while (order > target_order) {
+        split_buddy(addr);
+        order--;
+    }
+    take_buddy(addr);
+    
+    page_lock.unlock(irqs);
+    validate_free_lists();
+    return pa2kptr<void*>(addr);
+
+    // helper function void split_buddy(addr) (uses pages[addr / PAGESIZE] metadata)
+    // helper function void take_buddy(addr)
+
+    // basically we find, split as needed, and then take
+    
+    // OLD!!!!
+    // skip over reserved and kernel memory
+    // auto range = physical_ranges.find(next_free_pa);
+    // while (range != physical_ranges.end()) {
+    //     if (range->type() == mem_available) {
+    //         // use this page
+    //         ptr = pa2kptr<void*>(next_free_pa);
+    //         next_free_pa += PAGESIZE;
+    //         break;
+    //     } else {
+    //         // move to next range
+    //         next_free_pa = range->last();
+    //         ++range;
+    //     }
+    // }
+}
+
 // void* kalloc(size_t sz) {
-//     if (!init_kalloc_finished) {
-        
-//     }
-    
 //     if (sz == 0 || sz > PAGESIZE) {
 //         return nullptr;
 //     }
 
 //     auto irqs = page_lock.lock();
-//     uintptr_t addr = 0;
+//     void* ptr = nullptr;
 
+//     int target_order = max(msb(sz) - 1, min_order); // require min_order
 //     // iterate over free_lists from target_order to max_order (inclusive)
-//     int target_order = max(msb(sz) - 1, min_order); // require at least min_order
-//     int order = target_order;
-//     while (order <= max_order) {
-//         //  if we find a non-empty free list, set ptr to the first list entry and break
-//         free_list_entry* entry = free_lists[order].front();
-//         if (entry) {
-//             addr = entry->block_start_;
-//             break;
-//         }
-//         log_printf("no blocks of order %i\n...", order);
-//         order++;
-//     }
+//     //  if we find a non-empty free list, set ptr to the first list entry and break
 //     // if ptr is still null, return ptr (null)
-//     if (!addr) {
-//         log_printf("Out of memory\n");
-//         return nullptr;
-//     }
 //     // if order is greater than target, split buddies!!!
+//     // SPLIT:
+//     //  {
+//     //  deincrement this buddy's order
+//     //  find the midway point, assert allocatable, free, and order == -1, change order to this buddy's order
+//     //   (to be super paranoid: check that every page within this buddy apart from the first is allocatable, free, and order == -1)
+//     //  remove ptr from list; add ptr and midway point to list of order below
+//     //  }
 //     //  deincrement order, rinse and repeat until order == target (should always work)
-//     while (order > target_order) {
-//         split_buddy(addr);
-//         order--;
-//     }
-//     take_buddy(addr);
-    
-//     page_lock.unlock(irqs);
-//     validate_free_lists();
-//     return pa2kptr<void*>(addr);
+//     // TAKE:
+//     // (if order is equal to target,) mark all pages within buddy as non-free, remove ptr from free list, then return ptr
+//     // increment allocated_pages
 
 //     // helper function void split_buddy(addr) (uses pages[addr / PAGESIZE] metadata)
 //     // helper function void take_buddy(addr)
@@ -306,57 +348,32 @@ size_t kget_allocated_physpages() {
     
 //     // OLD!!!!
 //     // skip over reserved and kernel memory
-//     // auto range = physical_ranges.find(next_free_pa);
-//     // while (range != physical_ranges.end()) {
-//     //     if (range->type() == mem_available) {
-//     //         // use this page
-//     //         ptr = pa2kptr<void*>(next_free_pa);
-//     //         next_free_pa += PAGESIZE;
-//     //         break;
-//     //     } else {
-//     //         // move to next range
-//     //         next_free_pa = range->last();
-//     //         ++range;
-//     //     }
-//     // }
+//     auto range = physical_ranges.find(next_free_pa);
+//     while (range != physical_ranges.end()) {
+//         if (range->type() == mem_available) {
+//             // use this page
+//             ptr = pa2kptr<void*>(next_free_pa);
+//             next_free_pa += PAGESIZE;
+//             break;
+//         } else {
+//             // move to next range
+//             next_free_pa = range->last();
+//             ++range;
+//         }
+//     }
+
+//     page_lock.unlock(irqs);
+
+//     if (ptr) {
+//         // tell sanitizers the allocated page is accessible
+//         asan_mark_memory(ka2pa(ptr), PAGESIZE, false);
+//         // initialize to `int3`
+//         memset(ptr, 0xCC, PAGESIZE);
+//         // update stats
+//         ++allocated_pages;
+//     }
+//     return ptr;
 // }
-
-void* kalloc(size_t sz) {
-    if (sz == 0 || sz > PAGESIZE) {
-        return nullptr;
-    }
-
-    auto irqs = page_lock.lock();
-    void* ptr = nullptr;
-
-    // skip over reserved and kernel memory
-    auto range = physical_ranges.find(next_free_pa);
-    while (range != physical_ranges.end()) {
-        if (range->type() == mem_available) {
-            // use this page
-            ptr = pa2kptr<void*>(next_free_pa);
-            next_free_pa += PAGESIZE;
-            break;
-        } else {
-            // move to next range
-            next_free_pa = range->last();
-            ++range;
-        }
-    }
-
-    page_lock.unlock(irqs);
-
-    if (ptr) {
-        // tell sanitizers the allocated page is accessible
-        asan_mark_memory(ka2pa(ptr), PAGESIZE, false);
-        // initialize to `int3`
-        memset(ptr, 0xCC, PAGESIZE);
-        // update stats
-        ++allocated_pages;
-        log_printf("kalloc returned ptr: %p\n", ptr);
-    }
-    return ptr;
-}
 
 // kfree(ptr)
 //    Free a pointer previously returned by `kalloc`. Does nothing if
