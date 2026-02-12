@@ -12,20 +12,20 @@ static size_t allocated_pages = 0;
 const int min_order = 12;
 const int max_order = 21;
 
-struct free_list_entry {
-    const uintptr_t block_start_;
-    list_links link_;
+// struct free_list_entry {
+//     const uintptr_t block_start_;
+//     list_links link_;
 
-    free_list_entry(uintptr_t block_start)
-        : block_start_(block_start) {
-    }
-};
+//     free_list_entry(uintptr_t block_start)
+//         : block_start_(block_start) {
+//     }
+// };
 
 struct page_entry {
     bool allocatable; // whether the page is in a range marked as available (i.e. not reserved or kernel)
     bool free;
     int order;
-    free_list_entry* list_entry;
+    list_links link_;
 };
 
 // page is in a reserved/kernel range:
@@ -44,8 +44,15 @@ struct page_entry {
 //  free = true (defaults to this and should never be touched during allocation)
 //  order = -1
 
-page_entry pages[MEMSIZE_PHYSICAL / 2];
-list<free_list_entry, &free_list_entry::link_> free_lists[max_order + 1];
+page_entry pages[MEMSIZE_PHYSICAL / PAGESIZE];
+list<page_entry, &page_entry::link_> free_lists[max_order + 1];
+
+void addr_from_entry(page_entry* entry) {
+    size_t addr_diff = reinterpret_cast<uintptr_t>(entry) - reinterpret_cast<uintptr_t>(&pages[0]);
+    size_t page_diff = addr_diff / sizeof(page_entry);
+    assert(addr_diff % sizeof(page_entry) == 0);
+    return page_diff * PAGESIZE;
+}
 
 // Test functions
 
@@ -55,7 +62,7 @@ void validate_free(uintptr_t ptr) {
     assert(header.allocatable);
     assert(header.free);
     assert(header.order >= min_order && header.order <= max_order);
-    assert(header.list_entry);
+    assert(header.link_);
     size_t block_sz_bytes = 1u << header.order;
     size_t block_sz_pages = block_sz_bytes / PAGESIZE;
     for (size_t pg_offset = 1; pg_offset < block_sz_pages; pg_offset++) {
@@ -63,19 +70,19 @@ void validate_free(uintptr_t ptr) {
         assert(entry.allocatable);
         assert(entry.free);
         assert(entry.order == -1);
-        assert(!entry.list_entry);
+        assert(!entry.link_);
     } // for now this is the canonical way to iterate over `pages`
 }
 
 void validate_free_lists() {
     log_printf("Validating `free_lists`\n");
     for (int order = min_order; order <= max_order; order++) {
-        for (free_list_entry* list_entry = free_lists[order].front();
-             list_entry != nullptr;
-             list_entry = free_lists[order].next(list_entry)) {
-            if (list_entry) {
-                log_printf("Found free list with entry of value %zu\n", list_entry->block_start_);
-                validate_free(list_entry->block_start_);
+        for (page_entry* entry = free_lists[order].front();
+             entry != nullptr;
+             entry = free_lists[order].next(entry)) {
+            if (entry) {
+                log_printf("Found free list with entry of value %zu\n", addr_from_entry(entry));
+                validate_free(addr_from_entry(entry));
             }
         }
     }
@@ -90,7 +97,7 @@ void mark_range(const memrange* range, bool allocatable) {
             pages[i / PAGESIZE].allocatable = true;
             pages[i / PAGESIZE].free = true;
             pages[i / PAGESIZE].order = -1;
-            pages[i / PAGESIZE].list_entry = nullptr;
+            // pages[i / PAGESIZE].link_ = nullptr;
         } else {
             pages[i / PAGESIZE].allocatable = false;
             // all other members should never be accessed in this case
@@ -98,6 +105,7 @@ void mark_range(const memrange* range, bool allocatable) {
     }
 }
 
+// !!!!!!!!!!!!! haven't made it past here in the refactor
 void make_order_blocks(const memrange* range) {
     // Need to freaking round up to the next address that is a power of 2, check if it is within the range, then take the largest order of 2 which fits within available space and also evenly divides the new starting address.
     uintptr_t aligned_addr = round_up_pow2(range->first());
@@ -129,6 +137,7 @@ void make_order_blocks(const memrange* range) {
         }
     }
 }
+
 
 // init_kalloc
 //    Initialize stuff needed by `kalloc`. Called from `init_hardware`,
@@ -250,6 +259,10 @@ void take_buddy(uintptr_t addr) {
 //    The handout code does not free memory and allocates memory in units
 //    of pages.
 void* kalloc(size_t sz) {
+    if (!init_kalloc_finished) {
+        
+    }
+    
     if (sz == 0 || sz > PAGESIZE) {
         return nullptr;
     }
@@ -267,6 +280,7 @@ void* kalloc(size_t sz) {
             addr = entry->block_start_;
             break;
         }
+        log_printf("no blocks of order %i\n...", order);
         order++;
     }
     // if ptr is still null, return ptr (null)
