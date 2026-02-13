@@ -457,25 +457,27 @@ uintptr_t merge_buddies(uintptr_t addr) {
     //   check whether both buddy headers are free
     page_entry* first_entry = &pages[first_buddy_addr / PAGESIZE];
     page_entry* second_entry = &pages[second_buddy_addr / PAGESIZE];
-    assert(first_entry->free || second_entry->free);
-    if (first_entry->free && second_entry->free) {
-    //   both are free:
-    //    (pages) set beginning header to (next order) and midpoint header to order -1
-        first_entry->order = new_order;
-        second_entry->order = -1;
-    //    (list) remove list entries for both buddies; add one entry to the (next order) list
-        first_entry->link_.erase();
-        second_entry->link_.erase();
-        free_lists[new_order].push_front(first_entry);
-    //    (paranoia: free check on new merged block)
-        validate_free(first_buddy_addr);
-    //    (can also have an (externally callable?) global check to see if the data structures exactly match)
-    //    return the start address of the new merged block
-        return first_buddy_addr;
-    } else {
-    //   one isn't free: return nullptr
+    if (!first_entry->allocatable || !second_entry->allocatable) {
         return 0;
     }
+    assert(first_entry->free || second_entry->free);
+    if (!first_entry->free || !second_entry->free) {
+        //   one isn't free: return nullptr
+        return 0;
+    }
+    //   both are free:
+    //    (pages) set beginning header to (next order) and midpoint header to order -1
+    first_entry->order = new_order;
+    second_entry->order = -1;
+    //    (list) remove list entries for both buddies; add one entry to the (next order) list
+    first_entry->link_.erase();
+    second_entry->link_.erase();
+    free_lists[new_order].push_front(first_entry);
+    //    (paranoia: free check on new merged block)
+    validate_free(first_buddy_addr);
+    //    (can also have an (externally callable?) global check to see if the data structures exactly match)
+    //    return the start address of the new merged block
+    return first_buddy_addr;
     //    (paranoia: at least one of the buddies should be free, as in its header is allocatable, free, and order != -1, and the other should be either free or correctly allocated: alloctable, all pages non-free, and order != -1 only on the header)
 }
 
