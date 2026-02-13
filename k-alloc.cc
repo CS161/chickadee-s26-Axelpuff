@@ -57,9 +57,9 @@ uintptr_t addr_from_entry(page_entry* entry) {
 
 // Test functions
 
-void validate_free(uintptr_t ptr) {
-    assert((ptr & PAGEOFFMASK) == 0);
-    page_entry* header = &pages[ptr / PAGESIZE]; // not copyable
+void validate_free(uintptr_t addr) {
+    assert((addr & PAGEOFFMASK) == 0);
+    page_entry* header = &pages[addr / PAGESIZE]; // not copyable
     assert(header->allocatable);
     assert(header->free);
     assert(header->order >= min_order && header->order <= max_order);
@@ -67,7 +67,7 @@ void validate_free(uintptr_t ptr) {
     size_t block_sz_bytes = 1u << header->order;
     size_t block_sz_pages = block_sz_bytes / PAGESIZE;
     for (size_t pg_offset = 1; pg_offset < block_sz_pages; pg_offset++) {
-        page_entry* entry = &pages[(ptr / PAGESIZE) + pg_offset];
+        page_entry* entry = &pages[(addr / PAGESIZE) + pg_offset];
         assert(entry->allocatable);
         assert(entry->free);
         assert(entry->order == -1);
@@ -400,6 +400,85 @@ void* kalloc(size_t sz) {
 //     return ptr;
 // }
 
+void validate_allocated(uintptr_t addr) {
+    assert((addr & PAGEOFFMASK) == 0);
+    page_entry* header = &pages[addr / PAGESIZE]; // not copyable
+    assert(header->allocatable);
+    assert(!header->free);
+    assert(header->order >= min_order && header->order <= max_order);
+    size_t block_sz_bytes = 1u << header->order;
+    size_t block_sz_pages = block_sz_bytes / PAGESIZE;
+    for (size_t pg_offset = 1; pg_offset < block_sz_pages; pg_offset++) {
+        page_entry* entry = &pages[(addr / PAGESIZE) + pg_offset];
+        assert(entry->allocatable);
+        assert(!entry->free);
+        assert(entry->order == -1);
+    }
+}
+
+// free an individual buddy. Should be followed by calling `merge_buddies(addr)` until no more merges are possible. Caller should hold `page_lock`.
+void give_buddy(uintptr_t addr) {
+    validate_allocated(addr);
+    
+    //  (pages) mark all pages in buddy as free, (list) add it to the appropriate free list
+    page_entry* header = &pages[addr / PAGESIZE];
+    header->free = true;
+    
+    size_t block_sz_bytes = 1u << header->order;
+    size_t block_sz_pages = block_sz_bytes / PAGESIZE;
+    for (size_t pg_offset = 1; pg_offset < block_sz_pages; pg_offset++) {
+        pages[(addr / PAGESIZE) + pg_offset].free = true;
+    }
+
+    free_lists[header->order].push_front(header);
+    
+    log_printf("I'd like to free %p\n", addr);
+
+    // tell sanitizers to poison range
+    asan_mark_memory(addr, block_sz_bytes, true);
+    // update stats
+    allocated_pages -= block_sz_pages;    
+}
+
+// Try to merge two buddies, one of which is pointed to by `addr`. Functions the same way whether you pick the first or second buddy.
+// Upon successful merge, return the first address of the new merged buddy. If the other buddy to merge isn't free, return 0.
+// This should never unironically return 0: the zero page should never be the header of a valid buddy.
+// Caller should hold `page_lock`.
+uintptr_t merge_buddies(uintptr_t addr) {
+    validate_free(addr); // the one given should be free
+    // Merge(ptr):
+    int old_order = pages[addr / PAGESIZE].order;
+    int new_order = old_order + 1;
+    //  (pages) find root buddy; this involves dividing and re-multiplying ptr by 2^(next order) (make sure to convert to pages)
+    uintptr_t first_buddy_addr = (addr >> new_order) << new_order;
+    //   then find next buddy by adding 2^(order)
+    uintptr_t second_buddy_addr = first_buddy_addr + (1ul << old_order);
+    assert((first_buddy_addr == addr) != (second_buddy_addr == addr)); // just checking my math. (using != as XOR)
+    //   check whether both buddy headers are free
+    page_entry* first_entry = &pages[first_buddy_addr / PAGESIZE];
+    page_entry* second_entry = &pages[second_buddy_addr / PAGESIZE];
+    assert(first_entry->free || second_entry->free);
+    if (first_entry->free && second_entry->free) {
+    //   both are free:
+    //    (pages) set beginning header to (next order) and midpoint header to order -1
+        first_entry->order = new_order;
+        second_entry->order = -1;
+    //    (list) remove list entries for both buddies; add one entry to the (next order) list
+        first_entry->link_.erase();
+        second_entry->link_.erase();
+        free_lists[new_order].push_front(first_entry);
+    //    (paranoia: free check on new merged block)
+        validate_free(first_buddy_addr);
+    //    (can also have an (externally callable?) global check to see if the data structures exactly match)
+    //    return the start address of the new merged block
+        return first_buddy_addr;
+    } else {
+    //   one isn't free: return nullptr
+        return 0;
+    }
+    //    (paranoia: at least one of the buddies should be free, as in its header is allocatable, free, and order != -1, and the other should be either free or correctly allocated: alloctable, all pages non-free, and order != -1 only on the header)
+}
+
 // kfree(ptr)
 //    Free a pointer previously returned by `kalloc`. Does nothing if
 //    `ptr == nullptr`.
@@ -407,31 +486,36 @@ void kfree(void* ptr) {
     if (ptr) {
         // tell sanitizers the freed page is inaccessible
         asan_mark_memory(ka2pa(ptr), PAGESIZE, true);
-        // remember to deincrement allocated pages
+        // !!! remember to deincrement allocated pages
     }
+
+    if (!ptr) {
+        return;
+    }
+    auto irqs = page_lock.lock();
+
+    uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
     // In this case the situation is reversed. We give, and then merge as needed.
-    // Give:
-    //  (pages) mark all pages in buddy as free, (list) add it to the appropriate free list
-    //  deincrement allocated_pages
-    // Merge(ptr): functions the same way whether you pick the first or second buddy.
-    //  (pages) find root buddy; this involves dividing and re-multiplying ptr by 2^(next order) (make sure to convert to pages)
-    //   then find next buddy by adding 2^(order)
-    //   check whether both buddy headers are free
-    //    (paranoia: at least one of the buddies should be free, as in its header is allocatable, free, and order != -1, and the other should be either free or correctly allocated: alloctable, all pages non-free, and order != -1 only on the header)
-    //   one isn't free: return nullptr
-    //   both are free:
-    //    (pages) set beginning header to (next order) and midpoint header to order -1
-    //    (list) remove list entries for both buddies; add one entry to the (next order) list
-    //    (paranoia: free check on new merged block)
-    //    (can also have an (externally callable?) global check to see if the data structures exactly match)
-    //    return the start address of the new merged block
+    give_buddy(addr);
     // Rinse and repeat merging
+    int merges = 0;
+    addr = merge_buddies(addr);
+    while (addr) {
+        if (merges > max_order - min_order) {
+            panic("Too many merges");
+        }
+        merges++;
+        log_printf("On merge %i, merging at %p...\n", merges, addr);
+        addr = merge_buddies(addr);
+    }
     
+    validate_free_lists();
+    
+    page_lock.unlock(irqs);
     // helper functions:
     // validate_free(ptr): Validates that the layout of (pages) starting at ptr is correct for a free allocation (uses pages[ptr / PAGESIZE].order to determine order)
     // validate_allocated(ptr): Ditto, for allocated
     // validate_all_free(ptr): Traverses free_lists and calls validate_free on all pointers it finds
-    log_printf("kfree not implemented yet\n");
 }
 
 
