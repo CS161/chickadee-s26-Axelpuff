@@ -304,6 +304,7 @@ void* kalloc(size_t sz) {
     // if ptr is still null, return ptr (null)
     if (!addr) {
         log_printf("Out of memory\n");
+        page_lock.unlock(irqs);
         return nullptr;
     }
     // if order is greater than target, split buddies!!!
