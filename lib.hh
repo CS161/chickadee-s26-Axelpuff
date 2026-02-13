@@ -321,6 +321,7 @@ struct bitset_view {
 // Your numbers should be >=128 to avoid conflicts.
 #define SYSCALL_GETUSAGE        128
 #define SYSCALL_CORRUPT         129
+#define SYSCALL_TESTKALLOC      130
 
 // System call error return values
 

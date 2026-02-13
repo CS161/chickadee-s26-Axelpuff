@@ -289,6 +289,9 @@ uintptr_t proc::syscall(regstate* regs) {
     return 0;
   }
 
+  case SYSCALL_TESTKALLOC:
+      return syscall_testkalloc(regs);
+
   default:
     // no such system call
     log_printf("%d: no such system call %u\n", id_, regs->reg_rax);
@@ -602,6 +605,12 @@ int proc::syscall_getusage(regstate* regs) {
   u->free_pages = kget_total_physpages() - kget_allocated_physpages();
   u->allocated_pages = kget_allocated_physpages();
   return 0;
+}
+
+int proc::syscall_testkalloc(regstate* regs) {
+    proc* p = knew<proc>();
+    delete p;
+    return 0;
 }
 
 // tick()

@@ -319,6 +319,11 @@ inline int sys_getusage(usage* u) {
     return make_syscall(SYSCALL_GETUSAGE, reinterpret_cast<uintptr_t>(u));
 }
 
+// sys_testkalloc()
+//    Test kalloc
+inline int sys_testkalloc() {
+    return make_syscall(SYSCALL_TESTKALLOC);
+}
 
 // dprintf(fd, format, ...)
 //    Construct a string from `format` and pass it to `sys_write(fd)`.

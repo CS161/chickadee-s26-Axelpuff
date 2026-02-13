@@ -79,6 +79,7 @@ struct __attribute__((aligned(4096))) proc {
     uintptr_t syscall_readdiskfile(regstate* reg);
 
     int syscall_getusage(regstate* regs);
+    int syscall_testkalloc(regstate* regs);
 
     inline irqstate lock_pagetable_read();
     inline void unlock_pagetable_read(irqstate& irqs);
