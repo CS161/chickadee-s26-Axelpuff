@@ -607,9 +607,35 @@ int proc::syscall_getusage(regstate* regs) {
   return 0;
 }
 
+// proc::syscall_testkalloc(regs)
+//  Run a bunch of memory calls and then check that the memory state is valid.
 int proc::syscall_testkalloc(regstate* regs) {
+    log_printf("pt entry\n");
     proc* p = knew<proc>();
+    void* ptrs[12];
+    for (int i = 0; i < 6; i++) {
+        ptrs[i] = kalloc(0x1000u << i);
+    }
+    for (int i = 5; i >= 2; i--) {
+        kfree(ptrs[i]);
+    }
+    
+    validate_all_pages();
+    
+    for (int i = 6; i < 12; i++) {
+        ptrs[i] = kalloc(0x100u << i);
+    }
+    for (int i = 2; i >= 0; i--) {
+        kfree(ptrs[i]);
+    }
+    for (int i = 6; i < 12; i++) {
+        kfree(ptrs[i]);
+    }
     delete p;
+    
+    validate_all_pages();
+    
+    log_printf("pt final\n");
     return 0;
 }
 

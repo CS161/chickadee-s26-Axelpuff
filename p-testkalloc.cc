@@ -7,7 +7,7 @@ void process_main() {
     // tests. How you make this work is up to you.
     int r = sys_testkalloc();
     assert_eq(r, 0);
-    console_printf(CS_SUCCESS "testkalloc succeeded!\n");
+    console_printf(CS_SUCCESS "testkalloc succeeded! See log.txt\n");
 
     // This test runs before `sys_exit` is implemented, so we can’t use it.
     while (true) {

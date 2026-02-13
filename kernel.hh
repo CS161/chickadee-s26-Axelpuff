@@ -326,6 +326,9 @@ inline T read_unaligned(const uint8_t* ptr, T (U::* member)) {
 size_t kget_total_physpages();
 size_t kget_allocated_physpages();
 
+// On failure, crashes.
+void validate_all_pages();
+
 // kalloc(sz)
 //    Allocate and return a pointer to at least `sz` contiguous bytes
 //    of memory. Returns `nullptr` if `sz == 0` or on failure.
