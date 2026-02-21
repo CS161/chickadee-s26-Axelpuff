@@ -397,17 +397,22 @@ int proc::syscall_fork(regstate* regs) {
   int pid = -2;
   proc* p;
   { 
-    spinlock_guard guard(ptable_lock);
-    pid = find_free_pid();
-    if (pid == -1) {
-      return OOP_ERROR; // technically not out of memory but similar
-    }
-   p = knew<proc>();
-   p->id_ = pid;
-   p->init_user(child_pagetable);
-   *(p->regs_) = *regs;
-   p->regs_->reg_rax = 0;    
-   ptable[pid] = p;
+      spinlock_guard guard(ptable_lock);
+      pid = find_free_pid();
+      if (pid == -1) {
+          cleanup_process_memory(child_pagetable, addr);
+          return OOP_ERROR; // technically not out of memory but similar
+      }
+      p = knew<proc>();
+      if (!p) {
+          cleanup_process_memory(child_pagetable, addr);
+          return OOM_ERROR;
+      }
+      p->id_ = pid;
+      p->init_user(child_pagetable);
+      *(p->regs_) = *regs;
+      p->regs_->reg_rax = 0;    
+      ptable[pid] = p;
   }
   assert(pid >= 0);
   // add to run queue
