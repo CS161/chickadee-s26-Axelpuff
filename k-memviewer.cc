@@ -102,28 +102,32 @@ void memusage::refresh() {
     assert(ptable_lock.is_locked());
     for (int pid = 1; pid < NPROC; ++pid) {
         proc* p = ptable[pid];
-        if (p) {
-            mark(ka2pa(p), f_kernel | f_process(pid));
+        if (!p) { // ??? maybe not a sufficient guard
+            break;
+        }
+        mark(ka2pa(p), f_kernel | f_process(pid));
 
-            auto irqs = p->lock_pagetable_read();
-            if (p->pagetable_ && p->pagetable_ != early_pagetable) {
-                for (ptiter it(p); it.low(); it.next()) {
-                    mark(it.pa(), f_kernel | f_process(pid));
-                }
-                mark(ka2pa(p->pagetable_), f_kernel | f_process(pid));
+        auto irqs = p->lock_pagetable_read();
+        if (p->pagetable_ && p->pagetable_ != early_pagetable) {
+            // log_printf("highmem base: %p\n", HIGHMEM_BASE);
+            // log_printf("negative highmem base: %p\n", -HIGHMEM_BASE);
+            for (ptiter it(p); it.low(); it.next()) {
+                // log_printf("let me try... %p\n", it.pa());
+                mark(it.pa(), f_kernel | f_process(pid));
+            }
+            mark(ka2pa(p->pagetable_), f_kernel | f_process(pid));
 
-                for (vmiter it(p, 0); it.low(); ) {
-                    if (it.user()) {
-                        mark(it.pa(), f_user | f_process(pid));
-                        it += PAGESIZE; //it.next();
-                    } else {
-                        // log_printf("%p\n", it.pa());
-                        it.next_range();
-                    }
+            for (vmiter it(p, 0); it.low(); ) {
+                if (it.user()) {
+                    mark(it.pa(), f_user | f_process(pid));
+                    it += PAGESIZE; //it.next();
+                } else {
+                    // log_printf("%p\n", it.pa());
+                    it.next_range();
                 }
             }
-            p->unlock_pagetable_read(irqs);
         }
+        p->unlock_pagetable_read(irqs);
     }
 }
 

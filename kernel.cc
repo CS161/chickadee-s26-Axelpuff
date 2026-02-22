@@ -160,6 +160,8 @@ void proc::exception(regstate* regs) {
   // return to interrupted context
 }
 
+// helper to test stack canary
+
 void descender(int n) {
     char test;
     log_printf("Stack now at: %p\n", &test); // force the compiler not to optimize
@@ -255,6 +257,14 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_FORK:
     return syscall_fork(regs);
 
+  case SYSCALL_EXIT: {
+    int e = syscall_exit(regs);
+    assert(e == 0);
+    regs_ = regs; // ??? inefficient? this state is never used
+    yield_noreturn();
+    break; // will not be reached
+  }
+
   case SYSCALL_READ:
     return syscall_read(regs);
 
@@ -325,21 +335,28 @@ int find_free_pid() {
 //   kfree(pagetable);
 // }
 
-// cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
+void cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr) {
+    for (uintptr_t addr = 0; addr < max_addr; addr += PAGESIZE) {
+        // !!! Is there a potential issue here with iterating by pagesize if allocations are larger than a page? Or does .user() get updated?
+        vmiter it = vmiter(pagetable, addr);
+        if (it.user() && addr != CONSOLE_ADDR) {
+            assert(it.writable());
+            log_printf("trying to free %p\n", addr);
+            kfree(pa2kptr<void*>(it.pa()));
+            log_printf("succesfully freed %p\n", addr);
+        } else {
+            // log_printf("skipping %p\n", addr);
+        }
+    }
+}    
+
+// cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr)
 //    Frees all process memory from 0 up to max_addr,
 //    in `pagetable`, EXCLUDING max_addr, and then frees `pagetable` itself
 
-void cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr)
-{
-  for (uintptr_t addr = 0; addr < max_addr; addr += PAGESIZE)
-    {
-      vmiter it = vmiter(pagetable, addr);
-      if (it.user())
-        {
-	  kfree(reinterpret_cast<void *>(it.pa()));
-        }
-    }
-  delete pagetable;
+void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr) {
+    cleanup_process_memory(pagetable, max_addr);
+    delete pagetable;
 }
 
 // proc::syscall_fork(regs)
@@ -367,14 +384,14 @@ int proc::syscall_fork(regstate* regs) {
                   void* pa = kalloc(PAGESIZE);
                   if (!pa)
                       {
-                          cleanup_process_memory(child_pagetable, addr);
+                          cleanup_pagetable(child_pagetable, addr);
                           return OOM_ERROR;
                       }
                   int r = vmiter(child_pagetable, it.va()).try_map(pa, it.perm());
                   if (r != 0)
                       {
                           kfree(pa);
-                          cleanup_process_memory(child_pagetable, addr);
+                          cleanup_pagetable(child_pagetable, addr);
                           return OOM_ERROR;
                       }
                   memcpy(pa, reinterpret_cast<void *>(addr), PAGESIZE);
@@ -384,7 +401,7 @@ int proc::syscall_fork(regstate* regs) {
               int r = vmiter(child_pagetable, it.va()).try_map(it.pa(), it.perm());
               if (r != 0)
                   {
-                      cleanup_process_memory(child_pagetable, addr);
+                      cleanup_pagetable(child_pagetable, addr);
                       return OOM_ERROR;
                   }
               // increment ref count (this helps preserve the read-only data when
@@ -400,12 +417,12 @@ int proc::syscall_fork(regstate* regs) {
       spinlock_guard guard(ptable_lock);
       pid = find_free_pid();
       if (pid == -1) {
-          cleanup_process_memory(child_pagetable, addr);
+          cleanup_pagetable(child_pagetable, addr);
           return OOP_ERROR; // technically not out of memory but similar
       }
       p = knew<proc>();
       if (!p) {
-          cleanup_process_memory(child_pagetable, addr);
+          cleanup_pagetable(child_pagetable, addr);
           return OOM_ERROR;
       }
       p->id_ = pid;
@@ -418,9 +435,29 @@ int proc::syscall_fork(regstate* regs) {
   // add to run queue
   cpus[pid % ncpu].enqueue(p);
   // return child pid to parent
+  log_printf("Successfully forked process with pid %i\n", pid);
   return pid;
 }
 
+// int get_ptable_index(proc* p)
+
+
+// proc::syscall_exit(regs)
+//    Exit current process.
+
+int proc::syscall_exit(regstate* regs) {
+    {
+        spinlock_guard guard(ptable_lock);
+        // get rid of entry in ptable
+        ptable[this->id_] = nullptr;
+        // mark as exited for CPU to clean up
+        // (we're in the proc struct using the pagetable right now)
+        this->pstate_ = ps_exited;
+    }
+    log_printf("Process %ld is exiting...\n", this->id_);
+    cleanup_process_memory(this->pagetable_, MEMSIZE_VIRTUAL);
+    return 0;
+}
 
 // proc::syscall_read(regs), proc::syscall_write(regs),
 // proc::syscall_readdiskfile(regs)

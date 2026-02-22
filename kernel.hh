@@ -26,7 +26,7 @@ struct elf_program;
 // Process descriptor type
 struct __attribute__((aligned(4096))) proc {
     enum pstate_t {
-        ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_faulted, ps_blocked
+        ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_exited, ps_faulted, ps_blocked
     };
 
     // These four members must come first, at these byte offsets:
@@ -73,6 +73,7 @@ struct __attribute__((aligned(4096))) proc {
     inline void unblock();
 
     int syscall_fork(regstate* regs);
+    int syscall_exit(regstate* regs);
 
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);
