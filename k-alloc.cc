@@ -96,7 +96,7 @@ void validate_allocated(uintptr_t addr) {
 }
 
 void validate_free_lists() {
-    log_printf("Validating `free_lists`\n");
+    // log_printf("Validating `free_lists`\n");
     for (int order = min_order; order <= max_order; order++) {
         for (page_entry* entry = free_lists[order].front();
              entry != nullptr;
@@ -282,7 +282,7 @@ void take_buddy(uintptr_t addr) {
     // increment allocated_pages
     validate_free(addr);
     
-    log_printf("Taking buddy starting at %p\n", addr);
+    // log_printf("Taking buddy starting at %p\n", addr);
     page_entry* header = &pages[addr / PAGESIZE];
     header->free = false;
 
@@ -344,7 +344,6 @@ void* kalloc(size_t sz) {
     // if ptr is still null, return ptr (null)
     if (!addr) {
         log_printf("Out of memory\n");
-        assert(false);
         page_lock.unlock(irqs);
         return nullptr;
     }
@@ -417,10 +416,6 @@ uintptr_t merge_buddies(uintptr_t addr) {
         return 0;
     }
     //   both are free:
-    log_printf("about to assert on %p...\n", first_buddy_addr);
-    validate_free(first_buddy_addr);
-    log_printf("done asserting\n");
-    validate_free(second_buddy_addr);
     //    (pages) set beginning header to (next order) and midpoint header to order -1
     assert(new_order = first_entry->order + 1);
     first_entry->order = new_order;
@@ -431,7 +426,6 @@ uintptr_t merge_buddies(uintptr_t addr) {
     free_lists[new_order].push_front(first_entry);
     //    (paranoia: free check on new merged block)
     validate_free(first_buddy_addr);
-    log_printf("Validated that %p is free\n", first_buddy_addr);
     //    (can also have an (externally callable?) global check to see if the data structures exactly match)
     //    return the start address of the new merged block
     return first_buddy_addr;
@@ -457,14 +451,14 @@ void kfree(void* ptr) {
     give_buddy(addr);
     // Rinse and repeat merging
     int merges = 0;
-    log_printf("On merge %i, merging at %p...\n", merges, addr);
+    // log_printf("On merge %i, merging at %p...\n", merges, addr);
     addr = merge_buddies(addr);
     while (addr) {
         if (merges > max_order - min_order) {
             panic("Too many merges");
         }
         merges++;
-        log_printf("On merge %i, merging at %p...\n", merges, addr);
+        // log_printf("On merge %i, merging at %p...\n", merges, addr);
         // !!!!!! There is a race condition going on before this call, because a merge on the address returned by a merge should never assert fail.
         addr = merge_buddies(addr);
     }

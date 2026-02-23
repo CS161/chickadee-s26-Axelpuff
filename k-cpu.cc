@@ -81,10 +81,11 @@ void cpustate::schedule() {
         assert(!current_->yields_);
         
         set_pagetable(early_pagetable);
-        log_printf("Trying to free pagetable\n");
+        // log_printf("Trying to free pagetable\n");
         delete current_->pagetable_;
-        log_printf("Trying to free proc\n");
+        // log_printf("Trying to free proc\n");
         delete current_;
+        log_printf("Process done exiting\n");
         current_ = nullptr;
     }
     

@@ -336,18 +336,21 @@ int find_free_pid() {
 // }
 
 void cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr) {
+    size_t cleaned_pages = 0;
     for (uintptr_t addr = 0; addr < max_addr; addr += PAGESIZE) {
         // !!! Is there a potential issue here with iterating by pagesize if allocations are larger than a page? Or does .user() get updated?
         vmiter it = vmiter(pagetable, addr);
         if (it.user() && addr != CONSOLE_ADDR) {
             assert(it.writable());
-            log_printf("trying to free %p\n", addr);
+            // log_printf("trying to free %p\n", addr);
             kfree(pa2kptr<void*>(it.pa()));
-            log_printf("succesfully freed %p\n", addr);
+            // log_printf("succesfully freed %p\n", addr);
+            cleaned_pages++;
         } else {
             // log_printf("skipping %p\n", addr);
         }
     }
+    log_printf("%zu pages freed \n", cleaned_pages);
 }    
 
 // cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr)
@@ -418,6 +421,7 @@ int proc::syscall_fork(regstate* regs) {
       pid = find_free_pid();
       if (pid == -1) {
           cleanup_pagetable(child_pagetable, addr);
+          log_printf("failed to find a ptable slot\n");
           return OOP_ERROR; // technically not out of memory but similar
       }
       p = knew<proc>();
@@ -455,6 +459,7 @@ int proc::syscall_exit(regstate* regs) {
         this->pstate_ = ps_exited;
     }
     log_printf("Process %ld is exiting...\n", this->id_);
+    // ??? not putting a lock here could lead to weird things if multiple threads were on this CPU
     cleanup_process_memory(this->pagetable_, MEMSIZE_VIRTUAL);
     return 0;
 }
