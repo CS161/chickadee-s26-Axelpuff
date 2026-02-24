@@ -103,7 +103,7 @@ void memusage::refresh() {
     for (int pid = 1; pid < NPROC; ++pid) {
         proc* p = ptable[pid];
         if (!p) { // ??? maybe not a sufficient guard
-            break;
+            continue;
         }
         mark(ka2pa(p), f_kernel | f_process(pid));
 
@@ -120,14 +120,16 @@ void memusage::refresh() {
             for (vmiter it(p, 0); it.low(); ) {
                 if (it.user()) {
                     mark(it.pa(), f_user | f_process(pid));
-                    it += PAGESIZE; //it.next();
+                    it.next();
                 } else {
                     // log_printf("%p\n", it.pa());
                     it.next_range();
                 }
             }
+
         }
         p->unlock_pagetable_read(irqs);
+
     }
 }
 
@@ -199,7 +201,7 @@ uint16_t memusage::symbol_at(uintptr_t pa) const {
 static void console_memviewer_virtual(memusage& mu, proc* vmp) {
     const char* statemsg = vmp->pstate_ == proc::ps_faulted ? " (faulted)" : "";
     console_printf(CPOS(10, 26),
-                   CS_WHITE "VIRTUAL ADDRESS SPACE FOR %d%C%s", vmp->id_,  // get rid of newline for cosmetics
+                   CS_WHITE "VIRTUAL ADDRESS SPACE FOR %d%C%s\n", vmp->id_,  // get rid of newline for cosmetics
                    0x0700, statemsg);
 
     for (vmiter it(vmp, 0);
