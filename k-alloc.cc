@@ -292,7 +292,6 @@ void take_buddy(uintptr_t addr) {
     size_t block_sz_bytes = (1u << header->order);
     size_t block_sz_pages = block_sz_bytes / PAGESIZE;
     for (size_t pg_offset = 1; pg_offset < block_sz_pages; pg_offset++) {
-        assert(false); // this should not happen until things larger than a pagesize can be allocated
         pages[(addr / PAGESIZE) + pg_offset].free = false;
     }
 
@@ -322,7 +321,8 @@ void take_buddy(uintptr_t addr) {
 //    The handout code does not free memory and allocates memory in units
 //    of pages.
 void* kalloc(size_t sz) {
-    if (sz == 0 || sz > PAGESIZE) {
+    assert(sz <= (1u << max_order));
+    if (sz == 0) {
         return nullptr;
     }
     
@@ -335,7 +335,7 @@ void* kalloc(size_t sz) {
     // basically we find a buddy, split as needed, and then take it
 
     // iterate over free_lists from target_order to max_order (inclusive)
-    int target_order = max(msb(sz) - 1, min_order); // require at least min_order
+    int target_order = max(msb(round_up_pow2(sz)) - 1, min_order); // require at least min_order
     int order = target_order;
     while (order <= max_order) {
         //  if we find a non-empty free list, set ptr to the first list entry and break
@@ -360,6 +360,11 @@ void* kalloc(size_t sz) {
         order--;
     }
     take_buddy(addr);
+    
+    if (sz > PAGESIZE) {
+        log_printf("Requested allocation size: %p\n", sz);
+        log_printf("Target order: %i\n", target_order);
+    }
     
     size_t free_mem_after = validate_free_lists();    
     assert(free_mem_before - (1u << order) == free_mem_after);

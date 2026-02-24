@@ -1,5 +1,6 @@
 #include "kernel.hh"
 #include "k-vmiter.hh"
+#include "k-ahci.hh"
 
 // k-memviewer.cc
 //
@@ -97,12 +98,22 @@ void memusage::refresh() {
         assert(idle_task_);
         mark(ka2pa(idle_task_), f_kernel);
     }
+    
+    // include sata disk thing in kernel memory
+    if (sata_disk) {
+    for (uintptr_t pa = ka2pa(sata_disk);
+        pa < ka2pa(sata_disk) + sizeof(ahcistate);
+        pa += PAGESIZE) {
+        mark(pa, f_kernel);
+    }
+    }
 
     // mark pages accessible from each process's page table
     assert(ptable_lock.is_locked());
     for (int pid = 1; pid < NPROC; ++pid) {
         proc* p = ptable[pid];
-        if (!p) { // ??? maybe not a sufficient guard
+        if (!p || 
+            !(p->pstate_ == proc::ps_runnable || p->pstate_ == proc::ps_blocked || p->pstate_ == proc::ps_faulted)) { // ??? maybe not a sufficient guard
             continue;
         }
         mark(ka2pa(p), f_kernel | f_process(pid));
