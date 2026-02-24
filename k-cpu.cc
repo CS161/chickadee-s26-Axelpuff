@@ -69,25 +69,28 @@ void cpustate::schedule() {
     assert(spinlock_depth_ == 0 && "schedule while spinlocked", current_);
 
     // Delete proc struct if proc exited
-    if (current_->pstate_ == proc::ps_exited) {
-        // This is a place where the design of `struct proc` is heavily coupled
+    // if (current_->pstate_ == proc::ps_exited) {
+    //     // This is a place where the design of `struct proc` is heavily coupled
 
-        // Regs_ just points to the registers on the kernel stack
-        // which were put there in order to get past yield_noreturn assertions
-        assert(reinterpret_cast<uintptr_t>(current_) 
-               < reinterpret_cast<uintptr_t>(current_->regs_));
-        assert(reinterpret_cast<uintptr_t>(current_->regs_)
-               < reinterpret_cast<uintptr_t>(current_) + sizeof(proc));
-        assert(!current_->yields_);
+    //     // Regs_ just points to the registers on the kernel stack
+    //     // which were put there in order to get past yield_noreturn assertions
+    //     assert(reinterpret_cast<uintptr_t>(current_) 
+    //            < reinterpret_cast<uintptr_t>(current_->regs_));
+    //     assert(reinterpret_cast<uintptr_t>(current_->regs_)
+    //            < reinterpret_cast<uintptr_t>(current_) + sizeof(proc));
+    //     assert(!current_->yields_);
         
-        set_pagetable(early_pagetable);
-        // log_printf("Trying to free pagetable\n");
-        delete current_->pagetable_;
-        // log_printf("Trying to free proc\n");
-        delete current_;
-        log_printf("Process done exiting\n");
-        current_ = nullptr;
-    }
+    //     // set_pagetable(early_pagetable);
+    //     // log_printf("Trying to free pagetable\n");
+    //     // delete current_->pagetable_;
+    //     // log_printf("Trying to free proc\n");
+
+    //     log_printf("%d\n", current_->id_);
+    //     ptable[current_->id_] = nullptr;
+    //     delete current_;
+    //     log_printf("Process done exiting\n");
+    //     current_ = nullptr;
+    // }
     
     // initialize idle task
     if (!idle_task_) {
@@ -114,7 +117,14 @@ void cpustate::schedule() {
             if (!prev->runq_links_.is_linked()) {
                 runq_.push_back(prev);
             }
+        } else if (prev && prev->pstate_ == proc::ps_exited) {
+            ptable[prev->id_] = nullptr;
+            delete prev;
         }
+        // else if (prev && prev->pstate_ == proc::ps_exited) {
+        //     ptable[prev] = nullptr;
+        //     delete prev;
+        // }
 
         // run idle task as last resort
         current_ = runq_.empty() ? idle_task_ : runq_.pop_front();

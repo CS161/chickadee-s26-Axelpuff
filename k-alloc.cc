@@ -95,18 +95,21 @@ void validate_allocated(uintptr_t addr) {
     }
 }
 
-void validate_free_lists() {
+size_t validate_free_lists() {
     // log_printf("Validating `free_lists`\n");
+    size_t total_free_mem = 0;
     for (int order = min_order; order <= max_order; order++) {
         for (page_entry* entry = free_lists[order].front();
              entry != nullptr;
              entry = free_lists[order].next(entry)) {
             if (entry) {
                 // log_printf("Found free list with entry of value %zu\n", addr_from_entry(entry));
+                total_free_mem += 1u << order;
                 validate_free(addr_from_entry(entry));
             }
         }
     }
+    return total_free_mem;
 }
 
 // Validate all pages in the array `pages`. That is, iterate through all pages and check that they
@@ -318,13 +321,16 @@ void take_buddy(uintptr_t addr) {
 //
 //    The handout code does not free memory and allocates memory in units
 //    of pages.
-void* kalloc(size_t sz) {    
+void* kalloc(size_t sz) {
     if (sz == 0 || sz > PAGESIZE) {
         return nullptr;
     }
     
     auto irqs = page_lock.lock();
     uintptr_t addr = 0;
+
+    // super heavy check: calculate total free memory, then check later if it reduced by the appropriate amount
+    size_t free_mem_before = validate_free_lists();
     
     // basically we find a buddy, split as needed, and then take it
 
@@ -355,13 +361,16 @@ void* kalloc(size_t sz) {
     }
     take_buddy(addr);
     
-    validate_free_lists();
+    size_t free_mem_after = validate_free_lists();    
+    assert(free_mem_before - (1u << order) == free_mem_after);
+           
     page_lock.unlock(irqs);
     return pa2kptr<void*>(addr);
 }
 
 // free an individual buddy. Should be followed by calling `merge_buddies(addr)` until no more merges are possible. Caller should hold `page_lock`.
-void give_buddy(uintptr_t addr) {
+// returns order of freed buddy
+int give_buddy(uintptr_t addr) {
     assert(page_lock.is_locked());
     validate_allocated(addr);
     
@@ -383,7 +392,9 @@ void give_buddy(uintptr_t addr) {
     // tell sanitizers to poison range
     asan_mark_memory(addr, block_sz_bytes, true);
     // update stats
-    allocated_pages -= block_sz_pages;    
+    allocated_pages -= block_sz_pages;
+    
+    return header->order;
 }
 
 // Try to merge two buddies, one of which is pointed to by `addr`. Functions the same way whether you pick the first or second buddy.
@@ -445,10 +456,16 @@ void kfree(void* ptr) {
         return;
     }
     auto irqs = page_lock.lock();
-
+    
+    size_t free_mem_before = validate_free_lists();
+    
     uintptr_t addr = reinterpret_cast<uintptr_t>(ka2pa(ptr));
     // In this case the situation is reversed. We give, and then merge as needed.
-    give_buddy(addr);
+    int order = give_buddy(addr);
+
+    size_t free_mem_after = validate_free_lists();    
+    assert(free_mem_before + (1u << order) == free_mem_after);
+
     // Rinse and repeat merging
     int merges = 0;
     // log_printf("On merge %i, merging at %p...\n", merges, addr);
@@ -463,8 +480,8 @@ void kfree(void* ptr) {
         addr = merge_buddies(addr);
     }
     
-    validate_free_lists();
-    
+    assert(validate_free_lists() == free_mem_after);
+       
     page_lock.unlock(irqs);
 }
 

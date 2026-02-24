@@ -96,9 +96,9 @@ void start_initial_process(pid_t pid, const char* name) {
 //    task's stack, then calls proc::exception().
 
 void proc::exception(regstate* regs) {
-  // It can be useful to log events using `log_printf`.
+  // It can be useful to log events using `// log_printf`.
   // Events logged this way are stored in the host's `log.txt` file.
-  //log_printf("proc %d: exception %d @%p\n", id_, regs->reg_intno, regs->reg_rip);
+  //// log_printf("proc %d: exception %d @%p\n", id_, regs->reg_intno, regs->reg_rip);
 
   // Record most recent user-mode %rip.
   if ((regs->reg_cs & 3) != 0) {
@@ -164,12 +164,12 @@ void proc::exception(regstate* regs) {
 
 void descender(int n) {
     char test;
-    log_printf("Stack now at: %p\n", &test); // force the compiler not to optimize
+    // log_printf("Stack now at: %p\n", &test); // force the compiler not to optimize
     if (n == 0) {
         char big[16];
         for (int i = 0; i < 16; i++) {
             big[i] = 0;
-            log_printf("Modified: %p\n", &big[i]); // force the compiler not to optimize
+            // log_printf("Modified: %p\n", &big[i]); // force the compiler not to optimize
         }
         return;
     }
@@ -178,10 +178,10 @@ void descender(int n) {
 
 // utility to avoid hard-coding the stack bottom canary offset
 [[gnu::noinline]] void* proc::stack_bottom_canary_ptr() {
-    // log_printf("ptr: %p\n", &(this->stack_bottom_canary));
-    // log_printf("canary value: %i\n", this->stack_bottom_canary);
-    // log_printf("ptr2: %p\n", this);
-    // log_printf("val2: %i\n", this->canary);
+    // // log_printf("ptr: %p\n", &(this->stack_bottom_canary));
+    // // log_printf("canary value: %i\n", this->stack_bottom_canary);
+    // // log_printf("ptr2: %p\n", this);
+    // // log_printf("val2: %i\n", this->canary);
     return &(this->stack_bottom_canary);
 }
 
@@ -193,10 +193,10 @@ void descender(int n) {
 //    process in `%rax`.
 
 uintptr_t proc::syscall(regstate* regs) {
-  //log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
-    // log_printf("Size of regstate: %zu\n", sizeof(*regs));
-    // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->stack_bottom_canary) - reinterpret_cast<uintptr_t>(this));
-    // log_printf("canary value: %i\n", this->stack_bottom_canary);
+  //// log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
+    // // log_printf("Size of regstate: %zu\n", sizeof(*regs));
+    // // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->stack_bottom_canary) - reinterpret_cast<uintptr_t>(this));
+    // // log_printf("canary value: %i\n", this->stack_bottom_canary);
 
   // Record most recent user-mode %rip.
   recent_user_rip_ = regs->reg_rip;
@@ -293,7 +293,7 @@ uintptr_t proc::syscall(regstate* regs) {
       uintptr_t target = reinterpret_cast<uintptr_t>(&test) - PROCSTACK_SIZE + 0x125;
       for (int i = 0; i < 150; i++) {
           char* ptr = reinterpret_cast<char*>(target + i);
-          log_printf("Wiped %p\n", ptr);
+          // log_printf("Wiped %p\n", ptr);
           *ptr = 0;
       }
     return 0;
@@ -304,7 +304,7 @@ uintptr_t proc::syscall(regstate* regs) {
 
   default:
     // no such system call
-    log_printf("%d: no such system call %u\n", id_, regs->reg_rax);
+    // log_printf("%d: no such system call %u\n", id_, regs->reg_rax);
     return E_NOSYS;
 
   }
@@ -337,20 +337,27 @@ int find_free_pid() {
 
 void cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr) {
     size_t cleaned_pages = 0;
-    for (uintptr_t addr = 0; addr < max_addr; addr += PAGESIZE) {
+    vmiter it = vmiter(pagetable, 0);
+    while (it.va() < max_addr) {
         // !!! Is there a potential issue here with iterating by pagesize if allocations are larger than a page? Or does .user() get updated?
-        vmiter it = vmiter(pagetable, addr);
-        if (it.user() && addr != CONSOLE_ADDR) {
+        if (it.user() && it.va() != CONSOLE_ADDR) {
             assert(it.writable());
-            // log_printf("trying to free %p\n", addr);
-            kfree(pa2kptr<void*>(it.pa()));
-            // log_printf("succesfully freed %p\n", addr);
+            // void* ptr = pa2kptr<void*>(it.pa());
+            // log_printf("trying to free %p\n", it.va());
+            it.kfree_page();
+            // log_printf("succesfully freed %p\n", it.va());
+            // assert(!it.user());
+            // assert(it.pa() == (uintptr_t) -1);
             cleaned_pages++;
-        } else {
-            // log_printf("skipping %p\n", addr);
+        // } else {
+            // // log_printf("skipping %p\n", addr);
         }
+        it.next();
     }
-    log_printf("%zu pages freed \n", cleaned_pages);
+
+    // log_printf("max_addr: %p\n", max_addr);
+    // log_printf("memsize_virtual: %p\n", MEMSIZE_VIRTUAL);    
+    // log_printf("%zu pages freed \n", cleaned_pages);
 }    
 
 // cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr)
@@ -359,6 +366,10 @@ void cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr) {
 
 void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr) {
     cleanup_process_memory(pagetable, max_addr);
+
+    for (ptiter pit(pagetable); pit.low(); pit.next()) {
+      pit.kfree_ptp();
+    }
     delete pagetable;
 }
 
@@ -421,7 +432,7 @@ int proc::syscall_fork(regstate* regs) {
       pid = find_free_pid();
       if (pid == -1) {
           cleanup_pagetable(child_pagetable, addr);
-          log_printf("failed to find a ptable slot\n");
+          // log_printf("failed to find a ptable slot\n");
           return OOP_ERROR; // technically not out of memory but similar
       }
       p = knew<proc>();
@@ -432,6 +443,7 @@ int proc::syscall_fork(regstate* regs) {
       p->id_ = pid;
       p->init_user(child_pagetable);
       *(p->regs_) = *regs;
+      // memcpy(p->regs_, regs, sizeof(regstate));
       p->regs_->reg_rax = 0;    
       ptable[pid] = p;
   }
@@ -439,7 +451,7 @@ int proc::syscall_fork(regstate* regs) {
   // add to run queue
   cpus[pid % ncpu].enqueue(p);
   // return child pid to parent
-  log_printf("Successfully forked process with pid %i\n", pid);
+  // log_printf("Successfully forked process with pid %i\n", pid);
   return pid;
 }
 
@@ -450,17 +462,24 @@ int proc::syscall_fork(regstate* regs) {
 //    Exit current process.
 
 int proc::syscall_exit(regstate* regs) {
-    {
+    x86_64_pagetable* pt;
+  {
         spinlock_guard guard(ptable_lock);
         // get rid of entry in ptable
-        ptable[this->id_] = nullptr;
         // mark as exited for CPU to clean up
         // (we're in the proc struct using the pagetable right now)
         this->pstate_ = ps_exited;
+    // }
+
+    // log_printf("Process %ld is exiting...\n", this->id_);
+    
+    pt = this->pagetable_;
+    this->pagetable_ = nullptr;
     }
-    log_printf("Process %ld is exiting...\n", this->id_);
+    set_pagetable(early_pagetable);
+
     // ??? not putting a lock here could lead to weird things if multiple threads were on this CPU
-    cleanup_process_memory(this->pagetable_, MEMSIZE_VIRTUAL);
+    cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
     return 0;
 }
 
@@ -615,7 +634,8 @@ static void memshow() {
   int search = 0;
   while ((!ptable[showing]
 	  || !ptable[showing]->pagetable_
-	  || ptable[showing]->pagetable_ == early_pagetable)
+	  || ptable[showing]->pagetable_ == early_pagetable
+    || ptable[showing]->pstate_ == proc::ps_exited)
 	 && search < NPROC) {
     showing = (showing + 1) % NPROC;
     ++search;
@@ -657,7 +677,7 @@ int proc::syscall_getusage(regstate* regs) {
 // proc::syscall_testkalloc(regs)
 //  Run a bunch of memory calls and then check that the memory state is valid.
 int proc::syscall_testkalloc(regstate* regs) {
-    log_printf("pt entry\n");
+    // log_printf("pt entry\n");
     proc* p = knew<proc>();
     void* ptrs[12];
     for (int i = 0; i < 6; i++) {
@@ -682,7 +702,7 @@ int proc::syscall_testkalloc(regstate* regs) {
     
     validate_all_pages();
     
-    log_printf("pt final\n");
+    // log_printf("pt final\n");
     return 0;
 }
 
