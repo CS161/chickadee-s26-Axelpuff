@@ -69,10 +69,10 @@ void validate_free(uintptr_t addr) {
     for (size_t pg_offset = 1; pg_offset < block_sz_pages; pg_offset++) {
         page_entry* entry = &pages[(addr / PAGESIZE) + pg_offset];
         assert(entry->allocatable);
-        if (!entry->free) {
-            log_printf("FAILURE: pg at %p (offset from order %i block, offset %zu pages) NOT FREE\n", (addr / PAGESIZE) + pg_offset, header->order, pg_offset);
-            log_printf("Buddy page number: %p\n", addr / PAGESIZE);
-        }
+        // if (!entry->free) {
+        //     log_printf("FAILURE: pg at %p (offset from order %i block, offset %zu pages) NOT FREE\n", (addr / PAGESIZE) + pg_offset, header->order, pg_offset);
+        //     log_printf("Buddy page number: %p\n", addr / PAGESIZE);
+        // }
         assert(entry->free);
         assert(entry->order == -1);
         // assert(!entry.link_);
@@ -360,12 +360,7 @@ void* kalloc(size_t sz) {
         order--;
     }
     take_buddy(addr);
-    
-    if (sz > PAGESIZE) {
-        log_printf("Requested allocation size: %p\n", sz);
-        log_printf("Target order: %i\n", target_order);
-    }
-    
+       
     size_t free_mem_after = validate_free_lists();    
     assert(free_mem_before - (1u << order) == free_mem_after);
            

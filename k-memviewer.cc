@@ -101,11 +101,11 @@ void memusage::refresh() {
     
     // include sata disk thing in kernel memory
     if (sata_disk) {
-    for (uintptr_t pa = ka2pa(sata_disk);
-        pa < ka2pa(sata_disk) + sizeof(ahcistate);
-        pa += PAGESIZE) {
+      for (uintptr_t pa = ka2pa(sata_disk);
+	   pa < ka2pa(sata_disk) + sizeof(ahcistate);
+	   pa += PAGESIZE) {
         mark(pa, f_kernel);
-    }
+      }
     }
 
     // mark pages accessible from each process's page table
@@ -113,7 +113,10 @@ void memusage::refresh() {
     for (int pid = 1; pid < NPROC; ++pid) {
         proc* p = ptable[pid];
         if (!p || 
-            !(p->pstate_ == proc::ps_runnable || p->pstate_ == proc::ps_blocked || p->pstate_ == proc::ps_faulted)) { // ??? maybe not a sufficient guard
+            !(p->pstate_ == proc::ps_runnable
+	      || p->pstate_ == proc::ps_blocked
+	      || p->pstate_ == proc::ps_faulted)
+	    ) {
             continue;
         }
         mark(ka2pa(p), f_kernel | f_process(pid));
@@ -212,7 +215,7 @@ uint16_t memusage::symbol_at(uintptr_t pa) const {
 static void console_memviewer_virtual(memusage& mu, proc* vmp) {
     const char* statemsg = vmp->pstate_ == proc::ps_faulted ? " (faulted)" : "";
     console_printf(CPOS(10, 26),
-                   CS_WHITE "VIRTUAL ADDRESS SPACE FOR %d%C%s\n", vmp->id_,  // get rid of newline for cosmetics
+                   CS_WHITE "VIRTUAL ADDRESS SPACE FOR %d%C%s\n", vmp->id_,
                    0x0700, statemsg);
 
     for (vmiter it(vmp, 0);
