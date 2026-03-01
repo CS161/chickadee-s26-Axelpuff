@@ -285,6 +285,15 @@ uintptr_t proc::syscall(regstate* regs) {
     return bufcache::get().sync(drop);
   }
 
+  case SYSCALL_MSLEEP: {
+    // round up to nearest 0.01 seconds
+    unsigned long t_wakeup = ticks + (regs->reg_rdi + 9) / (1000 / HZ);
+    while (long(t_wakeup - ticks) > 0) {
+      yield();
+    }
+    return 0;
+  }
+
   case SYSCALL_GETUSAGE:
     return syscall_getusage(regs);
 
