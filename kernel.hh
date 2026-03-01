@@ -34,7 +34,6 @@ struct __attribute__((aligned(4096))) proc {
     regstate* regs_ = nullptr;            //  8: Process's current registers
     yieldstate* yields_ = nullptr;        // 16: Process's current yield state
     std::atomic<int> pstate_ = ps_blank;  // 24: Process state
-    // int canary = CANARY_VALUE;            // 28: Canary value
 
     x86_64_pagetable* pagetable_ = nullptr;    // Process's page table
     uintptr_t recent_user_rip_ = 0;            // Most recent user-mode %rip
@@ -45,6 +44,11 @@ struct __attribute__((aligned(4096))) proc {
     // Per-CPU run queue, controlled by cpustate::runq_lock_
     list_links runq_links_;                    // Links for run queue
     int runq_cpu_ = -1;                        // CPU index of recent run queue
+
+  // non-handout (therefore highly dangerous) members
+  pid_t parent_id_ = 0; // this should never be the parent id during runtime
+  list_links child_links_;
+  list<proc, &proc::child_links_> children;
 
     // This member must come last
     int stack_bottom_canary = CANARY_VALUE;
@@ -85,6 +89,7 @@ struct __attribute__((aligned(4096))) proc {
     inline irqstate lock_pagetable_read();
     inline void unlock_pagetable_read(irqstate& irqs);
   
+    // get canary location at runtime; avoid hard coding canary location
     void* stack_bottom_canary_ptr();
 
  private:

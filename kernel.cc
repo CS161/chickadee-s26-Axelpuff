@@ -34,8 +34,11 @@ void kernel_start(const char* command) {
     ptable[i] = nullptr;
   }
 
+  // start init
+  start_initial_process(1, "init");
+
   // start first process
-  start_initial_process(1, CHICKADEE_FIRST_PROCESS);
+  start_initial_process(2, CHICKADEE_FIRST_PROCESS);
 
   // start running processes
   cpus[0].schedule();
@@ -62,9 +65,10 @@ void start_initial_process(pid_t pid, const char* name) {
   // allocate process, initialize registers
   proc* p = knew<proc>();
   p->id_ = pid;
+  p->parent_id_ = 1;
   p->init_user(pt);
   p->regs_->reg_rip = ld.entry_rip_;
-
+  
   // initialize stack
   void* stkpg = kalloc(PAGESIZE);
   assert(stkpg);
@@ -80,6 +84,12 @@ void start_initial_process(pid_t pid, const char* name) {
     spinlock_guard guard(ptable_lock);
     assert(!ptable[pid]);
     ptable[pid] = p;
+    // if this process is not init, make it init's child
+    // assumption: the init process is its own parent, but not its own child. 
+    if (pid != 1) {
+      assert(ptable[1]);
+      ptable[1]->children.push_front(p);
+    }
   }
 
   // add to run queue
@@ -294,6 +304,11 @@ uintptr_t proc::syscall(regstate* regs) {
     return 0;
   }
 
+  case SYSCALL_GETPPID: {
+    spinlock_guard guard(ptable_lock);
+    return this->parent_id_;
+  }
+
   case SYSCALL_GETUSAGE:
     return syscall_getusage(regs);
 
@@ -450,11 +465,16 @@ int proc::syscall_fork(regstate* regs) {
           return OOM_ERROR;
       }
       p->id_ = pid;
+      p->parent_id_ = this->id_;
       p->init_user(child_pagetable);
       *(p->regs_) = *regs;
       // memcpy(p->regs_, regs, sizeof(regstate));
       p->regs_->reg_rax = 0;    
       ptable[pid] = p;
+      
+      log_printf("Parenting %ld\n", p->id_);
+      this->children.push_front(p);
+      log_printf("Done parenting %ld\n", p->id_);
   }
   assert(pid >= 0);
   // add to run queue
@@ -471,25 +491,37 @@ int proc::syscall_fork(regstate* regs) {
 //    Exit current process.
 
 int proc::syscall_exit(regstate* regs) {
-    x86_64_pagetable* pt;
+  x86_64_pagetable* pt;
   {
-        spinlock_guard guard(ptable_lock);
-        // get rid of entry in ptable
-        // mark as exited for CPU to clean up
-        // (we're in the proc struct using the pagetable right now)
-        this->pstate_ = ps_exited;
-    // }
+    spinlock_guard guard(ptable_lock);
+    log_printf("Process %ld is exiting...\n", this->id_);
+    
+    // reparent kids
+    for (proc* p = this->children.front();
+	 p != nullptr;
+	 p = this->children.front()) {
+      log_printf("Reparenting %ld\n", p->id_);
+      p->parent_id_ = 1;
+      this->children.erase(p);
+      
+      assert(ptable[1]);
+      ptable[1]->children.push_front(p);
+      log_printf("Done reparenting %ld\n", p->id_);
+    }
+    // remove self from parent's list
+    this->child_links_.erase();
 
-    // log_printf("Process %ld is exiting...\n", this->id_);
+    // mark as exited for CPU to clean up
+    this->pstate_ = ps_exited;
     
     pt = this->pagetable_;
     this->pagetable_ = nullptr;
-    }
-    set_pagetable(early_pagetable);
-
-    // ??? not putting a lock here could lead to weird things if multiple threads were on this CPU
-    cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
-    return 0;
+  }
+  
+  set_pagetable(early_pagetable);
+  // ??? could not putting a lock here could lead to weird things if multiple threads were on this CPU
+  cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
+  return 0;
 }
 
 // proc::syscall_read(regs), proc::syscall_write(regs),
