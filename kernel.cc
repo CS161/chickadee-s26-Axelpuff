@@ -108,7 +108,7 @@ void start_initial_process(pid_t pid, const char* name) {
 void proc::exception(regstate* regs) {
   // It can be useful to log events using `// log_printf`.
   // Events logged this way are stored in the host's `log.txt` file.
-  //// log_printf("proc %d: exception %d @%p\n", id_, regs->reg_intno, regs->reg_rip);
+  log_printf("proc %d: exception %d @%p\n", id_, regs->reg_intno, regs->reg_rip);
 
   // Record most recent user-mode %rip.
   if ((regs->reg_cs & 3) != 0) {
@@ -260,9 +260,13 @@ uintptr_t proc::syscall(regstate* regs) {
     return syscall_fork(regs);
 
   case SYSCALL_EXIT: {
-    int e = syscall_exit(regs);
-    assert(e == 0);
-    regs_ = regs; // ??? inefficient? this state is never used
+    {
+      spinlock_guard guard(ptable_lock);
+      int e = syscall_exit(regs);
+      assert(e == 0);
+      regs_ = regs; // ??? inefficient? this state is never used
+      log_printf("did we get here\n");
+    }
     yield_noreturn();
     break; // will not be reached
   }
@@ -315,17 +319,37 @@ uintptr_t proc::syscall(regstate* regs) {
 	spinlock_guard guard(ptable_lock);
 	proc* p = this->children.front();
 	if (!p) {
+	  log_printf("%d: couldn't find zombies to reap, no children\n", id_);
 	  return E_CHILD;
 	}
-	for (; p != nullptr; p = this->children.next(p)) {
+	while (p != nullptr) {
 	  assert(p->parent_id_ == this->id_);
 	  if (p->pstate_ == ps_zombie) {
+	    log_printf("checking process %d...\n", p->id_);
 	    int exit_status = p->exit_status_;
 	    p->pstate_ = ps_collected;
+
+	    assert(p != this);
+	    ptable[p->id_] = nullptr;
+	    log_printf("test: %p, pa: %p\n", p, ka2pa(reinterpret_cast<uintptr_t>(p)));
+	    pid_t test = p->id_;
+	    proc* p_delete = p;
+
+	    p = this->children.next(p);
+	    p_delete->child_links_.erase();
+	    
+	    assert(test);
+	    log_printf("Trying to clean up process %d\n", test);
+	    delete p_delete;
+	    log_printf("Cleaned up process %d\n", test);
+
 	    return format_waitpid_return(exit_status, 0);
+	  } else {
+	    p = this->children.next(p);
 	  }
 	}
 	if (wnohang) {
+	  log_printf("%d: couldn't find zombies to reap, still alive\n", id_);
 	  return E_AGAIN;
 	}
       } else {
@@ -335,7 +359,17 @@ uintptr_t proc::syscall(regstate* regs) {
 	}
 	if (ptable[pid]->pstate_ == ps_zombie) {
 	  int exit_status = ptable[pid]->exit_status_;
+	  ptable[pid]->child_links_.erase();
 	  ptable[pid]->pstate_ = ps_collected;
+
+	  assert(ptable[pid] != this);
+	  proc* p = ptable[pid];
+	  ptable[pid] = nullptr;
+	  // bruh nobody is using this path rn it could be totally busted
+	  assert(false);
+	  delete p;
+	  // log_printf("CLEANED UP A PROCESS!!!\n");
+
 	  return format_waitpid_return(exit_status, 0);
 	}
 	if (wnohang) {
@@ -530,24 +564,22 @@ int proc::syscall_fork(regstate* regs) {
 int proc::syscall_exit(regstate* regs) {
   x86_64_pagetable* pt;
   {
-    spinlock_guard guard(ptable_lock);
+    // spinlock_guard guard(ptable_lock);
     log_printf("Process %ld is exiting...\n", this->id_);
     
     // reparent kids
     for (proc* p = this->children.front();
 	 p != nullptr;
 	 p = this->children.front()) {
-      log_printf("Reparenting %ld\n", p->id_);
+      log_printf("Reparenting %d to init\n", p->id_);
       p->parent_id_ = 1;
       this->children.erase(p);
       
       assert(ptable[1]);
       ptable[1]->children.push_front(p);
-      log_printf("Done reparenting %ld\n", p->id_);
+      log_printf("Done reparenting %d\n", p->id_);
     }
-    // remove self from parent's list
-    this->child_links_.erase();
-
+    
     // mark as zombie
     this->pstate_ = ps_zombie;
 
@@ -556,6 +588,7 @@ int proc::syscall_exit(regstate* regs) {
     
     pt = this->pagetable_;
     this->pagetable_ = nullptr;
+    log_printf("letting go of lock...\n");
   }
   
   set_pagetable(early_pagetable);

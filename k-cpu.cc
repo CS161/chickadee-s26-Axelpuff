@@ -76,6 +76,8 @@ void cpustate::schedule() {
     // increment schedule counter
     ++nschedule_;
 
+    log_printf("Test: %d\n", current_->id_);
+
     // find a runnable process (preferring one different from `current_`)
     bool first_try = true;
     while (!current_
@@ -93,10 +95,11 @@ void cpustate::schedule() {
             if (!prev->runq_links_.is_linked()) {
                 runq_.push_back(prev);
             }
-        } else if (prev && prev->pstate_ == proc::ps_collected) {
-            ptable[prev->id_] = nullptr;
-            delete prev;
-        }
+        } // else if (prev && prev->pstate_ == proc::ps_collected) {
+	//   log_printf("CLEANED UP A PROCESS!!!: %d\n", prev->id_);
+        //     ptable[prev->id_] = nullptr;
+        //     delete prev;
+        // }
 
         // run idle task as last resort
         current_ = runq_.empty() ? idle_task_ : runq_.pop_front();
