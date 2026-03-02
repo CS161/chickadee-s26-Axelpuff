@@ -26,7 +26,7 @@ struct elf_program;
 // Process descriptor type
 struct __attribute__((aligned(4096))) proc {
     enum pstate_t {
-        ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_exited, ps_faulted, ps_blocked
+      ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_zombie, ps_collected, ps_faulted, ps_blocked
     };
 
     // These four members must come first, at these byte offsets:
@@ -49,6 +49,7 @@ struct __attribute__((aligned(4096))) proc {
   pid_t parent_id_ = 0; // this should never be the parent id during runtime
   list_links child_links_;
   list<proc, &proc::child_links_> children;
+  int exit_status_ = 0; // check out my music under the alias "Exit Status" on soundcloud (https://soundcloud.com/exit-status)
 
     // This member must come last
     int stack_bottom_canary = CANARY_VALUE;

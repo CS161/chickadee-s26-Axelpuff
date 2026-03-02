@@ -170,22 +170,6 @@ void proc::exception(regstate* regs) {
   // return to interrupted context
 }
 
-// helper to test stack canary
-
-void descender(int n) {
-    char test;
-    // log_printf("Stack now at: %p\n", &test); // force the compiler not to optimize
-    if (n == 0) {
-        char big[16];
-        for (int i = 0; i < 16; i++) {
-            big[i] = 0;
-            // log_printf("Modified: %p\n", &big[i]); // force the compiler not to optimize
-        }
-        return;
-    }
-    descender(n - 1);
-}
-
 // utility to avoid hard-coding the stack bottom canary offset
 [[gnu::noinline]] void* proc::stack_bottom_canary_ptr() {
     // // log_printf("ptr: %p\n", &(this->stack_bottom_canary));
@@ -193,6 +177,14 @@ void descender(int n) {
     // // log_printf("ptr2: %p\n", this);
     // // log_printf("val2: %i\n", this->canary);
     return &(this->stack_bottom_canary);
+}
+
+// helper function for waitpid, stores two `int`s as one `uintptr_t`
+uintptr_t format_waitpid_return(int exit_status, int syscall_return) {
+  unsigned int high_bits = static_cast<unsigned int>(exit_status);
+  unsigned int low_bits = static_cast<unsigned int>(syscall_return);
+  uintptr_t rax = static_cast<uintptr_t>(high_bits) << 32;
+  return rax + low_bits;
 }
 
 // proc::syscall(regs)
@@ -309,6 +301,51 @@ uintptr_t proc::syscall(regstate* regs) {
     return this->parent_id_;
   }
 
+  case SYSCALL_WAITPID: {
+    pid_t pid = regs->reg_rdi;
+    int options = regs->reg_rsi;
+    bool wnohang = options & W_NOHANG;
+    if ((options & (~W_NOHANG)) != 0) {
+      log_printf("%d: invalid waitpid options %i\n", id_, options);
+      return E_NOSYS;
+    }
+    
+    while (true) {
+      if (pid == 0) {
+	spinlock_guard guard(ptable_lock);
+	proc* p = this->children.front();
+	if (!p) {
+	  return E_CHILD;
+	}
+	for (; p != nullptr; p = this->children.next(p)) {
+	  assert(p->parent_id_ == this->id_);
+	  if (p->pstate_ == ps_zombie) {
+	    int exit_status = p->exit_status_;
+	    p->pstate_ = ps_collected;
+	    return format_waitpid_return(exit_status, 0);
+	  }
+	}
+	if (wnohang) {
+	  return E_AGAIN;
+	}
+      } else {
+	spinlock_guard guard(ptable_lock);
+	if (!ptable[pid] || ptable[pid]->parent_id_ != this->id_) {
+	  return E_CHILD;
+	}
+	if (ptable[pid]->pstate_ == ps_zombie) {
+	  int exit_status = ptable[pid]->exit_status_;
+	  ptable[pid]->pstate_ = ps_collected;
+	  return format_waitpid_return(exit_status, 0);
+	}
+	if (wnohang) {
+	  return E_AGAIN;
+	}
+      }
+      yield();
+    }
+  }
+
   case SYSCALL_GETUSAGE:
     return syscall_getusage(regs);
 
@@ -328,7 +365,7 @@ uintptr_t proc::syscall(regstate* regs) {
 
   default:
     // no such system call
-    // log_printf("%d: no such system call %u\n", id_, regs->reg_rax);
+    log_printf("%d: no such system call %u\n", id_, regs->reg_rax);
     return E_NOSYS;
 
   }
@@ -511,8 +548,11 @@ int proc::syscall_exit(regstate* regs) {
     // remove self from parent's list
     this->child_links_.erase();
 
-    // mark as exited for CPU to clean up
-    this->pstate_ = ps_exited;
+    // mark as zombie
+    this->pstate_ = ps_zombie;
+
+    // set exit status
+    this->exit_status_ = regs->reg_rdi;
     
     pt = this->pagetable_;
     this->pagetable_ = nullptr;
@@ -676,7 +716,10 @@ static void memshow() {
   while ((!ptable[showing]
 	  || !ptable[showing]->pagetable_
 	  || ptable[showing]->pagetable_ == early_pagetable
-    || ptable[showing]->pstate_ == proc::ps_exited)
+          || !(ptable[showing]->pstate_ == proc::ps_runnable
+	      || ptable[showing]->pstate_ == proc::ps_blocked
+	      || ptable[showing]->pstate_ == proc::ps_faulted)
+	  )
 	 && search < NPROC) {
     showing = (showing + 1) % NPROC;
     ++search;

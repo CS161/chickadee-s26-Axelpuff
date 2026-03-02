@@ -154,7 +154,18 @@ inline pid_t sys_getppid() {
 //    waits for any child. If `options == W_NOHANG`, returns immediately.
 inline pid_t sys_waitpid(pid_t pid, int* status = nullptr,
                          int options = 0) {
-    return E_NOSYS;
+  uintptr_t rax =  make_syscall(SYSCALL_WAITPID, pid, options);
+  // this should throw out high bits
+  unsigned int low_bits = static_cast<unsigned int>(rax);
+  if (status) {
+    unsigned int high_bits = static_cast<unsigned int>(rax >> 32);
+    if (low_bits != 0) {
+      assert(!high_bits);
+    } else { // random design choice: don't modify `status` if syscall errors
+      *status = static_cast<int>(high_bits);
+    }
+  }
+  return static_cast<int>(low_bits);
 }
 
 // sys_read(fd, buf, sz)
