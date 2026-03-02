@@ -76,8 +76,6 @@ void cpustate::schedule() {
     // increment schedule counter
     ++nschedule_;
 
-    log_printf("Test: %d\n", current_->id_);
-
     // find a runnable process (preferring one different from `current_`)
     bool first_try = true;
     while (!current_

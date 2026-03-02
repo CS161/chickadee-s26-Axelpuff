@@ -108,7 +108,7 @@ void start_initial_process(pid_t pid, const char* name) {
 void proc::exception(regstate* regs) {
   // It can be useful to log events using `// log_printf`.
   // Events logged this way are stored in the host's `log.txt` file.
-  log_printf("proc %d: exception %d @%p\n", id_, regs->reg_intno, regs->reg_rip);
+  // log_printf("proc %d: exception %d @%p\n", id_, regs->reg_intno, regs->reg_rip);
 
   // Record most recent user-mode %rip.
   if ((regs->reg_cs & 3) != 0) {
@@ -187,6 +187,8 @@ uintptr_t format_waitpid_return(int exit_status, int syscall_return) {
   return rax + low_bits;
 }
 
+void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr);
+
 // proc::syscall(regs)
 //    System call handler.
 //
@@ -260,13 +262,40 @@ uintptr_t proc::syscall(regstate* regs) {
     return syscall_fork(regs);
 
   case SYSCALL_EXIT: {
+    log_printf("Process %ld is exiting...\n", this->id_);
+    x86_64_pagetable* pt;
+    {
+      spinlock_guard guard(ptable_lock);  
+      // reparent kids
+      for (proc* p = this->children.front();
+	   p != nullptr;
+	   p = this->children.front()) {
+	log_printf("Reparenting %d to init\n", p->id_);
+	p->parent_id_ = 1;
+	this->children.erase(p);
+      
+	assert(ptable[1]);
+	ptable[1]->children.push_front(p);
+	log_printf("Done reparenting %d\n", p->id_);
+      }
+  
+      pt = this->pagetable_;
+      this->pagetable_ = nullptr;
+    }
+    
+    set_pagetable(early_pagetable);
+    cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
+    regs_ = regs; // ??? inefficient? this state is never used
+    
     {
       spinlock_guard guard(ptable_lock);
-      int e = syscall_exit(regs);
-      assert(e == 0);
-      regs_ = regs; // ??? inefficient? this state is never used
-      log_printf("did we get here\n");
+      // mark as zombie
+      this->pstate_ = ps_zombie;
+      // set exit status
+      this->exit_status_ = regs->reg_rdi;
     }
+    
+    // from this point on the proc struct and stack might be obliterated
     yield_noreturn();
     break; // will not be reached
   }
@@ -311,7 +340,7 @@ uintptr_t proc::syscall(regstate* regs) {
     bool wnohang = options & W_NOHANG;
     if ((options & (~W_NOHANG)) != 0) {
       log_printf("%d: invalid waitpid options %i\n", id_, options);
-      return E_NOSYS;
+      return format_waitpid_return(0, E_NOSYS);
     }
     
     while (true) {
@@ -319,8 +348,8 @@ uintptr_t proc::syscall(regstate* regs) {
 	spinlock_guard guard(ptable_lock);
 	proc* p = this->children.front();
 	if (!p) {
-	  log_printf("%d: couldn't find zombies to reap, no children\n", id_);
-	  return E_CHILD;
+	  // log_printf("%d: couldn't find zombies to reap, no children\n", id_);
+	  return format_waitpid_return(0, E_CHILD);
 	}
 	while (p != nullptr) {
 	  assert(p->parent_id_ == this->id_);
@@ -349,13 +378,13 @@ uintptr_t proc::syscall(regstate* regs) {
 	  }
 	}
 	if (wnohang) {
-	  log_printf("%d: couldn't find zombies to reap, still alive\n", id_);
-	  return E_AGAIN;
+	  // log_printf("%d: couldn't find zombies to reap, still alive\n", id_);
+	  return format_waitpid_return(0, E_AGAIN);
 	}
       } else {
 	spinlock_guard guard(ptable_lock);
 	if (!ptable[pid] || ptable[pid]->parent_id_ != this->id_) {
-	  return E_CHILD;
+	  return format_waitpid_return(0, E_CHILD);
 	}
 	if (ptable[pid]->pstate_ == ps_zombie) {
 	  int exit_status = ptable[pid]->exit_status_;
@@ -363,17 +392,14 @@ uintptr_t proc::syscall(regstate* regs) {
 	  ptable[pid]->pstate_ = ps_collected;
 
 	  assert(ptable[pid] != this);
-	  proc* p = ptable[pid];
+	  proc* p_delete = ptable[pid];
 	  ptable[pid] = nullptr;
-	  // bruh nobody is using this path rn it could be totally busted
-	  assert(false);
-	  delete p;
-	  // log_printf("CLEANED UP A PROCESS!!!\n");
+	  delete p_delete;
 
 	  return format_waitpid_return(exit_status, 0);
 	}
 	if (wnohang) {
-	  return E_AGAIN;
+	  return format_waitpid_return(0, E_AGAIN);
 	}
       }
       yield();
@@ -476,10 +502,9 @@ void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr) {
 int proc::syscall_fork(regstate* regs) {
   // initialize process page table
   x86_64_pagetable *child_pagetable = knew_pagetable();
-  if (!child_pagetable)
-    {
-      return OOM_ERROR;
-    }
+  if (!child_pagetable) {
+    return OOM_ERROR;
+  }
 
   // copy process code and data
   uintptr_t addr = 0;
@@ -561,41 +586,9 @@ int proc::syscall_fork(regstate* regs) {
 // proc::syscall_exit(regs)
 //    Exit current process.
 
-int proc::syscall_exit(regstate* regs) {
-  x86_64_pagetable* pt;
-  {
-    // spinlock_guard guard(ptable_lock);
-    log_printf("Process %ld is exiting...\n", this->id_);
-    
-    // reparent kids
-    for (proc* p = this->children.front();
-	 p != nullptr;
-	 p = this->children.front()) {
-      log_printf("Reparenting %d to init\n", p->id_);
-      p->parent_id_ = 1;
-      this->children.erase(p);
-      
-      assert(ptable[1]);
-      ptable[1]->children.push_front(p);
-      log_printf("Done reparenting %d\n", p->id_);
-    }
-    
-    // mark as zombie
-    this->pstate_ = ps_zombie;
-
-    // set exit status
-    this->exit_status_ = regs->reg_rdi;
-    
-    pt = this->pagetable_;
-    this->pagetable_ = nullptr;
-    log_printf("letting go of lock...\n");
-  }
-  
-  set_pagetable(early_pagetable);
-  // ??? could not putting a lock here could lead to weird things if multiple threads were on this CPU
-  cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
-  return 0;
-}
+// void proc::syscall_exit(regstate* regs) {  
+//   // ??? could not putting a lock here could lead to weird things if multiple threads were on this CPU
+// }
 
 // proc::syscall_read(regs), proc::syscall_write(regs),
 // proc::syscall_readdiskfile(regs)

@@ -78,7 +78,7 @@ struct __attribute__((aligned(4096))) proc {
     inline void unblock();
 
     int syscall_fork(regstate* regs);
-    int syscall_exit(regstate* regs);
+    // void syscall_exit(regstate* regs);
 
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);
@@ -100,6 +100,7 @@ struct __attribute__((aligned(4096))) proc {
 #define NPROC 16
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
+// extern spinlock phierarchy_lock;
 #define PROCSTACK_SIZE 4096UL
 
 
