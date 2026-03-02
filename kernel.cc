@@ -181,6 +181,7 @@ void proc::exception(regstate* regs) {
 
 // helper function for waitpid, stores two `int`s as one `uintptr_t`
 uintptr_t format_waitpid_return(int exit_status, int syscall_return) {
+  // log_printf("I AM TRYING MY BEST TO RETURN EXIT STATUS %i AND SUCCESS VALUE %i\n", exit_status, syscall_return);
   unsigned int high_bits = static_cast<unsigned int>(exit_status);
   unsigned int low_bits = static_cast<unsigned int>(syscall_return);
   uintptr_t rax = static_cast<uintptr_t>(high_bits) << 32;
@@ -355,24 +356,23 @@ uintptr_t proc::syscall(regstate* regs) {
 	  assert(p->parent_id_ == this->id_);
 	  if (p->pstate_ == ps_zombie) {
 	    log_printf("checking process %d...\n", p->id_);
-	    int exit_status = p->exit_status_;
-	    p->pstate_ = ps_collected;
-
 	    assert(p != this);
-	    ptable[p->id_] = nullptr;
-	    log_printf("test: %p, pa: %p\n", p, ka2pa(reinterpret_cast<uintptr_t>(p)));
-	    pid_t test = p->id_;
+	    pid = p->id_;
+	    int exit_status = p->exit_status_;
 	    proc* p_delete = p;
-
 	    p = this->children.next(p);
+	    
+	    p_delete->pstate_ = ps_collected;
+	    ptable[pid] = nullptr;
+	    // log_printf("test: %p, pa: %p\n", p, ka2pa(reinterpret_cast<uintptr_t>(p)));
 	    p_delete->child_links_.erase();
 	    
-	    assert(test);
-	    log_printf("Trying to clean up process %d\n", test);
+	    // assert(id);
+	    // log_printf("Trying to clean up process %d\n", pid);
 	    delete p_delete;
-	    log_printf("Cleaned up process %d\n", test);
+	    // log_printf("Cleaned up process %d\n", pid);
 
-	    return format_waitpid_return(exit_status, 0);
+	    return format_waitpid_return(exit_status, pid);
 	  } else {
 	    p = this->children.next(p);
 	  }
@@ -396,7 +396,7 @@ uintptr_t proc::syscall(regstate* regs) {
 	  ptable[pid] = nullptr;
 	  delete p_delete;
 
-	  return format_waitpid_return(exit_status, 0);
+	  return format_waitpid_return(exit_status, pid);
 	}
 	if (wnohang) {
 	  return format_waitpid_return(0, E_AGAIN);

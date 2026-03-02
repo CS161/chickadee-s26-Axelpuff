@@ -156,13 +156,13 @@ inline pid_t sys_waitpid(pid_t pid, int* status = nullptr,
                          int options = 0) {
   uintptr_t rax =  make_syscall(SYSCALL_WAITPID, pid, options);
   // this should throw out high bits
-  unsigned int low_bits = static_cast<unsigned int>(rax);
+  int low_bits = static_cast<int>(rax);
   if (status) {
-    unsigned int high_bits = static_cast<unsigned int>(rax >> 32);
-    if (low_bits != 0) {
+    int high_bits = static_cast<int>(rax >> 32);
+    if (low_bits == E_AGAIN || low_bits == E_NOSYS || low_bits == E_CHILD) {
       assert(!high_bits);
     } else { // random design choice: don't modify `status` if syscall errors
-      *status = static_cast<int>(high_bits);
+      *status = high_bits;
     }
   }
   return static_cast<int>(low_bits);
