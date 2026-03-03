@@ -344,6 +344,16 @@ uintptr_t proc::syscall(regstate* regs) {
       this->exit_status_ = regs->reg_rdi;
       // wake up waiters (won't activate until lock is released)
       proc_exit_wq.notify_all();
+      // notify parent if parent is sleeping
+      if (parent_id_ != 1
+	  && ptable[parent_id_] // valid since we have ptable_lock
+	  && ptable[parent_id_]->pstate_ == proc::ps_blocked
+	  ) {
+	assert(ptable[parent_id_]->blocked_wq_ != -1);
+	spinlock_guard sleep_guard(sleep_lock);
+	ptable[parent_id_]->child_exited_ = 1;
+	sleep_wq_wheel[ptable[parent_id_]->blocked_wq_].notify_all();
+      }
     }
     
     // from this point on the proc struct and stack might be obliterated
@@ -377,16 +387,20 @@ uintptr_t proc::syscall(regstate* regs) {
     // resume_counter_ = 0;
     // unsigned long initial_resumes = resume_counter_;
 
-    waiter w;
     spinlock_guard guard(sleep_lock);
     int q = t_wakeup & (WHEEL_QUEUES - 1);
+    blocked_wq_ = q;
+    child_exited_ = 0;
+    
+    waiter w;
     w.wait_until(sleep_wq_wheel[q], [&] () {
-      return (long(t_wakeup - ticks) <= 0);
+      return (long(t_wakeup - ticks) <= 0 || child_exited_ == 1);
     }, guard);
 
     // unsigned long final_resumes = resume_counter_;
     // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);
-    return 0;
+    blocked_wq_ = -1;
+    return child_exited_ ? E_INTR : 0;
   }
 
   case SYSCALL_GETPPID: {
