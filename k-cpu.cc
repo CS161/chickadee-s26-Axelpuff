@@ -4,7 +4,6 @@
 cpustate cpus[MAXCPU];
 int ncpu;
 
-
 // cpustate::init()
 //    Initialize a `cpustate`. Should be called once per active CPU,
 //    by the relevant CPU.
@@ -107,6 +106,7 @@ void cpustate::schedule() {
 
     // run `current_`
     set_pagetable(current_->pagetable_);
+    ++current_->resume_counter_;
     current_->resume(); // does not return
 }
 

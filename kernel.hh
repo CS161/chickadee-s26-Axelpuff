@@ -50,6 +50,7 @@ struct __attribute__((aligned(4096))) proc {
   list_links child_links_;
   list<proc, &proc::child_links_> children;
   int exit_status_ = 0; // check out my music under the alias "Exit Status" on soundcloud (https://soundcloud.com/exit-status)
+  unsigned long resume_counter_ = 0;
 
     // This member must come last
     int stack_bottom_canary = CANARY_VALUE;

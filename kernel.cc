@@ -336,12 +336,15 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_MSLEEP: {
     // round up to nearest 0.01 seconds
     unsigned long t_wakeup = ticks + (regs->reg_rdi + 9) / (1000 / HZ);
+    unsigned long initial_resumes = resume_counter_;
     
     waiter w;
     spinlock_guard guard(sleep_lock);
     w.wait_until(sleep_wq, [&] () {
       return (long(t_wakeup - ticks) < 0);
     }, guard);
+    unsigned long final_resumes = resume_counter_;
+    log_printf("Resumes since started sleeping (process %d): %lu\n", final_resumes - initial_resumes);
     return 0;
   }
 
