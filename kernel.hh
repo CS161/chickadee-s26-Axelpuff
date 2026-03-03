@@ -81,6 +81,10 @@ struct __attribute__((aligned(4096))) proc {
     int syscall_fork(regstate* regs);
     // void syscall_exit(regstate* regs);
 
+    // helpers for waitpid
+    proc* find_zombie_child();
+    int cleanup_and_return_status(proc* p);  
+
     uintptr_t syscall_read(regstate* reg);
     uintptr_t syscall_write(regstate* reg);
     uintptr_t syscall_readdiskfile(regstate* reg);

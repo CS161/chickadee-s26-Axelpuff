@@ -23,6 +23,8 @@ static void start_initial_process(pid_t pid, const char* program_name);
 spinlock sleep_lock;
 wait_queue sleep_wq_wheel[WHEEL_QUEUES];
 
+wait_queue proc_exit_wq;
+
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
 //    string is an optional string passed from the boot loader.
@@ -197,6 +199,38 @@ uintptr_t format_waitpid_return(int exit_status, int syscall_return) {
 
 void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr);
 
+// MUST BE CALLED holding `ptable_lock`
+proc* proc::find_zombie_child() {
+  proc* p = this->children.front();
+  while (p != nullptr) {
+    assert(p->parent_id_ == this->id_);
+    if (p->pstate_ == ps_zombie) {
+      break;
+    } else {
+      p = this->children.next(p);
+    }
+  }
+  return p;
+}
+
+// cleans up (euphemism) zombie child process and returns exit status
+// MUST BE CALLED holding `ptable_lock`
+int proc::cleanup_and_return_status(proc* p) {
+  // log_printf("checking process %d...\n", p->id_);
+  assert(p != this);
+  pid_t pid = p->id_;
+  int exit_status = p->exit_status_;
+	    
+  p->pstate_ = ps_collected; // pointless?
+  ptable[pid] = nullptr;
+  p->child_links_.erase();
+	    
+  // log_printf("Trying to clean up process %d\n", pid);
+  delete p;
+  // log_printf("Cleaned up process %d\n", pid);
+  return exit_status;
+}
+
 // proc::syscall(regs)
 //    System call handler.
 //
@@ -308,6 +342,8 @@ uintptr_t proc::syscall(regstate* regs) {
       this->pstate_ = ps_zombie;
       // set exit status
       this->exit_status_ = regs->reg_rdi;
+      // wake up waiters (won't activate until lock is released)
+      proc_exit_wq.notify_all();
     }
     
     // from this point on the proc struct and stack might be obliterated
@@ -338,6 +374,7 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_MSLEEP: {
     // round up to nearest 0.01 seconds
     unsigned long t_wakeup = ticks + (regs->reg_rdi + 9) / (1000 / HZ);
+    // resume_counter_ = 0;
     // unsigned long initial_resumes = resume_counter_;
 
     waiter w;
@@ -366,65 +403,57 @@ uintptr_t proc::syscall(regstate* regs) {
       return format_waitpid_return(0, E_NOSYS);
     }
     
-    while (true) {
-      if (pid == 0) {
-	spinlock_guard guard(ptable_lock);
-	proc* p = this->children.front();
-	if (!p) {
-	  // log_printf("%d: couldn't find zombies to reap, no children\n", id_);
-	  return format_waitpid_return(0, E_CHILD);
-	}
-	while (p != nullptr) {
-	  assert(p->parent_id_ == this->id_);
-	  if (p->pstate_ == ps_zombie) {
-	    log_printf("checking process %d...\n", p->id_);
-	    assert(p != this);
-	    pid = p->id_;
-	    int exit_status = p->exit_status_;
-	    proc* p_delete = p;
-	    p = this->children.next(p);
-	    
-	    p_delete->pstate_ = ps_collected;
-	    ptable[pid] = nullptr;
-	    // log_printf("test: %p, pa: %p\n", p, ka2pa(reinterpret_cast<uintptr_t>(p)));
-	    p_delete->child_links_.erase();
-	    
-	    // assert(id);
-	    // log_printf("Trying to clean up process %d\n", pid);
-	    delete p_delete;
-	    // log_printf("Cleaned up process %d\n", pid);
-
-	    return format_waitpid_return(exit_status, pid);
-	  } else {
-	    p = this->children.next(p);
-	  }
-	}
+    spinlock_guard guard(ptable_lock);
+    if (pid == 0) {
+      proc* p = this->children.front();
+      if (!p) {
+	// log_printf("%d: couldn't find zombies to reap, no children\n", id_);
+	return format_waitpid_return(0, E_CHILD);
+      }
+	
+      p = find_zombie_child();
+      if (!p) {
 	if (wnohang) {
 	  // log_printf("%d: couldn't find zombies to reap, still alive\n", id_);
 	  return format_waitpid_return(0, E_AGAIN);
-	}
-      } else {
-	spinlock_guard guard(ptable_lock);
-	if (!ptable[pid] || ptable[pid]->parent_id_ != this->id_) {
-	  return format_waitpid_return(0, E_CHILD);
-	}
-	if (ptable[pid]->pstate_ == ps_zombie) {
-	  int exit_status = ptable[pid]->exit_status_;
-	  ptable[pid]->child_links_.erase();
-	  ptable[pid]->pstate_ = ps_collected;
-
-	  assert(ptable[pid] != this);
-	  proc* p_delete = ptable[pid];
-	  ptable[pid] = nullptr;
-	  delete p_delete;
-
-	  return format_waitpid_return(exit_status, pid);
-	}
-	if (wnohang) {
-	  return format_waitpid_return(0, E_AGAIN);
+	} else {
+	  // resume_counter_ = 0;
+	  // unsigned long initial_resumes = resume_counter_;	  
+	  waiter w;
+	  w.wait_until(proc_exit_wq, [&] () {
+	    return (p = find_zombie_child()); // this is meant to be an assignment
+	  }, guard);	 
+	  // unsigned long final_resumes = resume_counter_;
+	  // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
 	}
       }
-      yield();
+	
+      assert(p);
+      pid = p->id_;
+      int exit_status = cleanup_and_return_status(p);
+      return format_waitpid_return(exit_status, pid);
+    } else {
+      if (!ptable[pid] || ptable[pid]->parent_id_ != this->id_) {
+	return format_waitpid_return(0, E_CHILD);
+      }
+      if (ptable[pid]->pstate_ != ps_zombie) {
+	if (wnohang) {
+	  return format_waitpid_return(0, E_AGAIN);
+	} else {
+	  // resume_counter_ = 0;
+	  // unsigned long initial_resumes = resume_counter_;    
+	  waiter w;
+	  w.wait_until(proc_exit_wq, [&] () {
+	    return (ptable[pid]->pstate_ == ps_zombie);
+	  }, guard);
+	  // unsigned long final_resumes = resume_counter_;
+	  // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
+	}
+      }
+	
+      assert(ptable[pid]->pstate_ == ps_zombie);
+      int exit_status = cleanup_and_return_status(ptable[pid]);
+      return format_waitpid_return(exit_status, pid);
     }
   }
 
