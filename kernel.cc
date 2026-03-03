@@ -19,12 +19,6 @@ std::atomic<unsigned long> ticks;
 static void tick();
 static void start_initial_process(pid_t pid, const char* program_name);
 
-#define WHEEL_QUEUES 512 // must be a power of 2
-spinlock sleep_lock;
-wait_queue sleep_wq_wheel[WHEEL_QUEUES];
-
-wait_queue proc_exit_wq;
-
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
 //    string is an optional string passed from the boot loader.
@@ -86,6 +80,7 @@ void start_initial_process(pid_t pid, const char* name) {
   // add to process table (requires lock in case another CPU is already
   // running processes)
   {
+    spinlock_guard guard_h(phierarchy_lock);
     spinlock_guard guard(ptable_lock);
     assert(!ptable[pid]);
     ptable[pid] = p;
@@ -199,7 +194,7 @@ uintptr_t format_waitpid_return(int exit_status, int syscall_return) {
 
 void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr);
 
-// MUST BE CALLED holding `ptable_lock`
+// MUST BE CALLED holding `phierarchy_lock`
 proc* proc::find_zombie_child() {
   proc* p = this->children.front();
   while (p != nullptr) {
@@ -214,7 +209,7 @@ proc* proc::find_zombie_child() {
 }
 
 // cleans up (euphemism) zombie child process and returns exit status
-// MUST BE CALLED holding `ptable_lock`
+// MUST BE CALLED holding both `phierarchy_lock` and `ptable_lock`
 int proc::cleanup_and_return_status(proc* p) {
   // log_printf("checking process %d...\n", p->id_);
   assert(p != this);
@@ -314,7 +309,7 @@ uintptr_t proc::syscall(regstate* regs) {
     
     x86_64_pagetable* pt;
     {
-      spinlock_guard guard(ptable_lock);  
+      spinlock_guard guard_h(phierarchy_lock);  
       // reparent kids
       for (proc* p = this->children.front();
 	   p != nullptr;
@@ -323,11 +318,13 @@ uintptr_t proc::syscall(regstate* regs) {
 	p->parent_id_ = 1;
 	this->children.erase(p);
       
+	spinlock_guard guard(ptable_lock);  
 	assert(ptable[1]);
 	ptable[1]->children.push_front(p);
 	// log_printf("Done reparenting %d\n", p->id_);
       }
   
+      spinlock_guard guard(ptable_lock);  
       pt = this->pagetable_;
       this->pagetable_ = nullptr;
     }
@@ -337,6 +334,7 @@ uintptr_t proc::syscall(regstate* regs) {
     regs_ = regs; // ??? inefficient? this state is never used
     
     {
+      spinlock_guard guard_h(phierarchy_lock);
       spinlock_guard guard(ptable_lock);
       // mark as zombie
       this->pstate_ = ps_zombie;
@@ -404,7 +402,7 @@ uintptr_t proc::syscall(regstate* regs) {
   }
 
   case SYSCALL_GETPPID: {
-    spinlock_guard guard(ptable_lock);
+    spinlock_guard guard_h(phierarchy_lock);
     return this->parent_id_;
   }
 
@@ -417,7 +415,7 @@ uintptr_t proc::syscall(regstate* regs) {
       return format_waitpid_return(0, E_NOSYS);
     }
     
-    spinlock_guard guard(ptable_lock);
+    spinlock_guard guard_h(phierarchy_lock);      
     if (pid == 0) {
       proc* p = this->children.front();
       if (!p) {
@@ -425,7 +423,7 @@ uintptr_t proc::syscall(regstate* regs) {
 	return format_waitpid_return(0, E_CHILD);
       }
 	
-      p = find_zombie_child();
+      p = find_zombie_child(); // pstate_ is atomic so this doesn't need ptable lock
       if (!p) {
 	if (wnohang) {
 	  // log_printf("%d: couldn't find zombies to reap, still alive\n", id_);
@@ -436,7 +434,7 @@ uintptr_t proc::syscall(regstate* regs) {
 	  waiter w;
 	  w.wait_until(proc_exit_wq, [&] () {
 	    return (p = find_zombie_child()); // this is meant to be an assignment
-	  }, guard);	 
+	  }, guard_h);	 
 	  // unsigned long final_resumes = resume_counter_;
 	  // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
 	}
@@ -444,13 +442,17 @@ uintptr_t proc::syscall(regstate* regs) {
 	
       assert(p);
       pid = p->id_;
+      spinlock_guard guard(ptable_lock);
       int exit_status = cleanup_and_return_status(p);
       return format_waitpid_return(exit_status, pid);
     } else {
+      spinlock_guard guard(ptable_lock);
       if (!ptable[pid] || ptable[pid]->parent_id_ != this->id_) {
 	return format_waitpid_return(0, E_CHILD);
       }
-      if (ptable[pid]->pstate_ != ps_zombie) {
+      proc* p = ptable[pid];
+      guard.unlock();
+      if (p->pstate_ != ps_zombie) {
 	if (wnohang) {
 	  return format_waitpid_return(0, E_AGAIN);
 	} else {
@@ -458,15 +460,16 @@ uintptr_t proc::syscall(regstate* regs) {
 	  // unsigned long initial_resumes = resume_counter_;    
 	  waiter w;
 	  w.wait_until(proc_exit_wq, [&] () {
-	    return (ptable[pid]->pstate_ == ps_zombie);
-	  }, guard);
+	    return (p->pstate_ == ps_zombie);
+	  }, guard_h);
 	  // unsigned long final_resumes = resume_counter_;
 	  // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
 	}
       }
 	
-      assert(ptable[pid]->pstate_ == ps_zombie);
-      int exit_status = cleanup_and_return_status(ptable[pid]);
+      assert(p->pstate_ == ps_zombie);
+      guard.lock();
+      int exit_status = cleanup_and_return_status(p);
       return format_waitpid_return(exit_status, pid);
     }
   }
@@ -613,6 +616,7 @@ int proc::syscall_fork(regstate* regs) {
   int pid = -2;
   proc* p;
   { 
+      spinlock_guard guard_h(phierarchy_lock);
       spinlock_guard guard(ptable_lock);
       pid = find_free_pid();
       if (pid == -1) {

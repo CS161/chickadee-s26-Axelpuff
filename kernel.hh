@@ -107,8 +107,13 @@ struct __attribute__((aligned(4096))) proc {
 #define NPROC 16
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
-// extern spinlock phierarchy_lock;
+extern spinlock phierarchy_lock;
 #define PROCSTACK_SIZE 4096UL
+
+#define WHEEL_QUEUES 512 // must be a power of 2
+extern spinlock sleep_lock;
+extern wait_queue sleep_wq_wheel[WHEEL_QUEUES];
+extern wait_queue proc_exit_wq;
 
 
 struct proc_loader {

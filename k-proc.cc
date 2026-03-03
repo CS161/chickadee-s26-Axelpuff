@@ -5,6 +5,12 @@
 
 proc* ptable[NPROC];            // array of process descriptor pointers
 spinlock ptable_lock;           // protects `ptable`
+spinlock phierarchy_lock;
+
+spinlock sleep_lock;
+wait_queue sleep_wq_wheel[WHEEL_QUEUES];
+wait_queue proc_exit_wq;
+
 
 // proc::proc()
 //    The constructor initializes the `proc` to empty.
