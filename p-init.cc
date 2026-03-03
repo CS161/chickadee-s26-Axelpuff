@@ -10,10 +10,8 @@ void process_main() {
     pid_t ppid = sys_getppid();
     assert(p == 1);
     assert(ppid == 1);
-    
-    while (true) {
-      // reap children until no more are left for now
-      while (sys_waitpid(0, nullptr, W_NOHANG) != E_AGAIN) {}
-      sys_yield();
-    }
+
+    // reap zombies until no more zombies are left
+    while (sys_waitpid(0, nullptr) != E_CHILD) {}
+    sys_exit(0);
 }

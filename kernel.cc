@@ -264,6 +264,13 @@ uintptr_t proc::syscall(regstate* regs) {
 
   case SYSCALL_EXIT: {
     log_printf("Process %ld is exiting...\n", this->id_);
+
+    // ??? Does it matter where this goes within the function?
+    if (this->id_ == 1) {
+      process_halt();
+      break; // will not be reached
+    }
+    
     x86_64_pagetable* pt;
     {
       spinlock_guard guard(ptable_lock);  
