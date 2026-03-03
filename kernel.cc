@@ -19,6 +19,8 @@ std::atomic<unsigned long> ticks;
 static void tick();
 static void start_initial_process(pid_t pid, const char* program_name);
 
+spinlock sleep_lock;
+wait_queue sleep_wq;
 
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
@@ -331,9 +333,11 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_MSLEEP: {
     // round up to nearest 0.01 seconds
     unsigned long t_wakeup = ticks + (regs->reg_rdi + 9) / (1000 / HZ);
-    while (long(t_wakeup - ticks) > 0) {
-      yield();
-    }
+    waiter w;
+    spinlock_guard guard(sleep_lock);
+    w.wait_until(sleep_wq, [&] () {
+      return (long(t_wakeup - ticks) > 0);
+    }, guard);
     return 0;
   }
 
