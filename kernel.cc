@@ -307,7 +307,6 @@ uintptr_t proc::syscall(regstate* regs) {
       break; // will not be reached
     }
     
-    x86_64_pagetable* pt;
     {
       spinlock_guard guard_h(phierarchy_lock);  
       // reparent kids
@@ -323,7 +322,10 @@ uintptr_t proc::syscall(regstate* regs) {
 	ptable[1]->children.push_front(p);
 	// log_printf("Done reparenting %d\n", p->id_);
       }
-  
+    }
+    
+    x86_64_pagetable* pt;
+    {
       spinlock_guard guard(ptable_lock);  
       pt = this->pagetable_;
       this->pagetable_ = nullptr;

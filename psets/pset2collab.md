@@ -3,8 +3,7 @@ CS 161 Problem Set 2 Collaboration
 
 Collaborators
 -------------
-(Other students you worked with)
+Sam (mostly just complained about bugs to him verbally)
 
 Citations
 ---------
-(Other sources consulted)
