@@ -131,6 +131,9 @@ void proc::exception(regstate* regs) {
     }
     lapicstate::get().ack();
     regs_ = regs;
+
+    sleep_wq.notify_all();
+    
     yield_noreturn();
     break;                  /* will not be reached */
   }
@@ -265,7 +268,7 @@ uintptr_t proc::syscall(regstate* regs) {
     return syscall_fork(regs);
 
   case SYSCALL_EXIT: {
-    log_printf("Process %ld is exiting...\n", this->id_);
+    // log_printf("Process %ld is exiting...\n", this->id_);
 
     // ??? Does it matter where this goes within the function?
     if (this->id_ == 1) {
@@ -280,13 +283,13 @@ uintptr_t proc::syscall(regstate* regs) {
       for (proc* p = this->children.front();
 	   p != nullptr;
 	   p = this->children.front()) {
-	log_printf("Reparenting %d to init\n", p->id_);
+	// log_printf("Reparenting %d to init\n", p->id_);
 	p->parent_id_ = 1;
 	this->children.erase(p);
       
 	assert(ptable[1]);
 	ptable[1]->children.push_front(p);
-	log_printf("Done reparenting %d\n", p->id_);
+	// log_printf("Done reparenting %d\n", p->id_);
       }
   
       pt = this->pagetable_;
@@ -333,10 +336,11 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_MSLEEP: {
     // round up to nearest 0.01 seconds
     unsigned long t_wakeup = ticks + (regs->reg_rdi + 9) / (1000 / HZ);
+    
     waiter w;
     spinlock_guard guard(sleep_lock);
     w.wait_until(sleep_wq, [&] () {
-      return (long(t_wakeup - ticks) > 0);
+      return (long(t_wakeup - ticks) < 0);
     }, guard);
     return 0;
   }
@@ -579,9 +583,9 @@ int proc::syscall_fork(regstate* regs) {
       p->regs_->reg_rax = 0;    
       ptable[pid] = p;
       
-      log_printf("Parenting %ld\n", p->id_);
+      // log_printf("Parenting %ld\n", p->id_);
       this->children.push_front(p);
-      log_printf("Done parenting %ld\n", p->id_);
+      // log_printf("Done parenting %ld\n", p->id_);
   }
   assert(pid >= 0);
   // add to run queue
