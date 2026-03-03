@@ -19,8 +19,9 @@ std::atomic<unsigned long> ticks;
 static void tick();
 static void start_initial_process(pid_t pid, const char* program_name);
 
+#define WHEEL_QUEUES 512 // must be a power of 2
 spinlock sleep_lock;
-wait_queue sleep_wq;
+wait_queue sleep_wq_wheel[WHEEL_QUEUES];
 
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
@@ -132,7 +133,8 @@ void proc::exception(regstate* regs) {
     lapicstate::get().ack();
     regs_ = regs;
 
-    sleep_wq.notify_all();
+    int q = ticks & (WHEEL_QUEUES - 1);
+    sleep_wq_wheel[q].notify_all();
     
     yield_noreturn();
     break;                  /* will not be reached */
@@ -336,15 +338,17 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_MSLEEP: {
     // round up to nearest 0.01 seconds
     unsigned long t_wakeup = ticks + (regs->reg_rdi + 9) / (1000 / HZ);
-    unsigned long initial_resumes = resume_counter_;
-    
+    // unsigned long initial_resumes = resume_counter_;
+
     waiter w;
     spinlock_guard guard(sleep_lock);
-    w.wait_until(sleep_wq, [&] () {
-      return (long(t_wakeup - ticks) < 0);
+    int q = t_wakeup & (WHEEL_QUEUES - 1);
+    w.wait_until(sleep_wq_wheel[q], [&] () {
+      return (long(t_wakeup - ticks) <= 0);
     }, guard);
-    unsigned long final_resumes = resume_counter_;
-    log_printf("Resumes since started sleeping (process %d): %lu\n", final_resumes - initial_resumes);
+
+    // unsigned long final_resumes = resume_counter_;
+    // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);
     return 0;
   }
 

@@ -1,0 +1,124 @@
+Range start: 0x0
+found reserved range of size 1 pages
+Range start: 0x1000
+space order 13
+addr order 12
+found existent range of order 12
+found available block of size 1 pages
+block starts at: 4096
+space order 13
+addr order 13
+found existent range of order 13
+found available block of size 2 pages
+block starts at: 8192
+Range start: 0x4000
+found reserved range of size 5 pages
+Range start: 0x9000
+space order 19
+addr order 12
+found existent range of order 12
+found available block of size 1 pages
+block starts at: 36864
+space order 19
+addr order 13
+found existent range of order 13
+found available block of size 2 pages
+block starts at: 40960
+space order 19
+addr order 14
+found existent range of order 14
+found available block of size 4 pages
+block starts at: 49152
+space order 19
+addr order 16
+found existent range of order 16
+found available block of size 16 pages
+block starts at: 65536
+space order 19
+addr order 17
+found existent range of order 17
+found available block of size 32 pages
+block starts at: 131072
+space order 18
+addr order 18
+found existent range of order 18
+found available block of size 64 pages
+block starts at: 262144
+space order 17
+addr order 19
+found existent range of order 17
+found available block of size 32 pages
+block starts at: 524288
+Range start: 0xa0000
+found reserved range of size 24 pages
+Range start: 0xb8000
+found reserved range of size 1 pages
+Range start: 0xb9000
+found reserved range of size 71 pages
+Range start: 0x100000
+found reserved range of size 61 pages
+Range start: 0x13d000
+space order 19
+addr order 12
+found existent range of order 12
+found available block of size 1 pages
+block starts at: 1298432
+space order 19
+addr order 13
+found existent range of order 13
+found available block of size 2 pages
+block starts at: 1302528
+space order 19
+addr order 18
+found existent range of order 18
+found available block of size 64 pages
+block starts at: 1310720
+space order 19
+addr order 19
+found existent range of order 19
+found available block of size 128 pages
+block starts at: 1572864
+Final checks:
+Found page of order 12
+at page 1, addr 0x1000
+Found page of order 13
+at page 2, addr 0x2000
+Found page of order 12
+at page 9, addr 0x9000
+Found page of order 13
+at page 10, addr 0xa000
+Found page of order 14
+at page 12, addr 0xc000
+Found page of order 16
+at page 16, addr 0x10000
+Found page of order 17
+at page 32, addr 0x20000
+Found page of order 18
+at page 64, addr 0x40000
+Found page of order 17
+at page 128, addr 0x80000
+Found page of order 12
+at page 317, addr 0x13d000
+Found page of order 13
+at page 318, addr 0x13e000
+Found page of order 18
+at page 320, addr 0x140000
+Found page of order 19
+at page 384, addr 0x180000
+kalloc initialized successfully
+CPU 0: LAPIC ID 0
+CPU 1: LAPIC ID 1
+Resumes since started sleeping (process 3): 11
+Resumes since started sleeping (process 2): 21
+Resumes since started sleeping (process 9): 31
+Resumes since started sleeping (process 6): 41
+Resumes since started sleeping (process 7): 51
+Resumes since started sleeping (process 4): 61
+Resumes since started sleeping (process 5): 71
+Resumes since started sleeping (process 8): 81
+Resumes since started sleeping (process 2): 81
+checking process 2...
+Resumes since started sleeping (process 3): 101
+checking process 3...
+Resumes since started sleeping (process 9): 101
+Resumes since started sleeping (process 6): 101
