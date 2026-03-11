@@ -22,6 +22,7 @@ struct keyboardstate {
     unsigned pos_ = 0;      // next position to read
     unsigned len_ = 0;      // number of characters in buffer
     unsigned eol_ = 0;      // position in buffer of most recent \n
+    wait_queue wq_;
     enum { boot, input, fail } state_ = boot;
 
     static keyboardstate& get() {

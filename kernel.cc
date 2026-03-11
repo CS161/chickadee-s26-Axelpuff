@@ -676,7 +676,8 @@ uintptr_t proc::syscall_read(regstate* regs) {
   // * Read from open file `fd` (reg_rdi), rather than `keyboardstate`.
   // * Validate the read buffer.
   auto& kbd = keyboardstate::get();
-  auto irqs = kbd.lock_.lock();
+  spinlock_guard guard(kbd.lock_);
+  // auto irqs = kbd.lock_.lock();
 
   // mark that we are now reading from the keyboard
   // (so `q` should not power off)
@@ -686,11 +687,17 @@ uintptr_t proc::syscall_read(regstate* regs) {
 
   // yield until a line is available
   // (special case: do not block if the user wants to read 0 bytes)
-  while (sz != 0 && kbd.eol_ == 0) {
-    kbd.lock_.unlock(irqs);
-    yield();
-    irqs = kbd.lock_.lock();
-  }
+  // while (sz != 0 && kbd.eol_ == 0) {
+  //   kbd.lock_.unlock(irqs);
+  //   yield();
+  //   irqs = kbd.lock_.lock();
+  // }
+
+  waiter w;
+  w.wait_until(kbd.wq_, [&] () {
+      return (sz == 0 || kbd.eol_ != 0);
+  }, guard);
+
 
   // read that line or lines
   size_t n = 0;
@@ -709,7 +716,7 @@ uintptr_t proc::syscall_read(regstate* regs) {
     }
   }
 
-  kbd.lock_.unlock(irqs);
+  // kbd.lock_.unlock(irqs);
   return n;
 }
 
