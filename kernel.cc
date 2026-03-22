@@ -672,12 +672,25 @@ uintptr_t proc::syscall_read(regstate* regs) {
   uintptr_t addr = regs->reg_rsi;
   size_t sz = regs->reg_rdx;
 
+  // Low-canonical read of size 0 always valid
+  if (sz == 0 && addr < VA_LOWEND) {
+    return 0;
+  }
+
   // Your code here!
   // * Read from open file `fd` (reg_rdi), rather than `keyboardstate`.
-  // * Validate the read buffer.
   auto& kbd = keyboardstate::get();
   spinlock_guard guard(kbd.lock_);
   // auto irqs = kbd.lock_.lock();
+  
+  // Validate the read buffer.
+  if (VA_LOWEND - sz < addr) {
+    return E_FAULT;
+  }
+  vmiter it(this, addr);
+  if (!(it.range_perm(sz) & (PTE_P | PTE_W | PTE_U))) {
+    return E_FAULT;
+  }
 
   // mark that we are now reading from the keyboard
   // (so `q` should not power off)
@@ -726,10 +739,27 @@ uintptr_t proc::syscall_write(regstate* regs) {
 
   uintptr_t addr = regs->reg_rsi;
   size_t sz = regs->reg_rdx;
+  log_printf("addr: %zu\n", addr);
+  log_printf("sz: %zu\n", sz);
+  log_printf("memsize virt: %zu\n", MEMSIZE_VIRTUAL);
 
+  // Low-canonical write of size 0 always valid
+  if (sz == 0 && addr < VA_LOWEND) {
+    return 0;
+  }
+  
   // Your code here!
   // * Write to open file `fd` (reg_rdi), rather than `consolestate`.
   // * Validate the write buffer.
+  if (VA_LOWEND - sz < addr) {
+    log_printf("nah bruh\n");
+    return E_FAULT;
+  }
+  vmiter it(this, addr);
+  if (!(it.range_perm(sz) & (PTE_P | PTE_U))) {
+    return E_FAULT;
+  }
+  
   auto& csl = consolestate::get();
   spinlock_guard guard(csl.lock_);
   size_t n = 0;
