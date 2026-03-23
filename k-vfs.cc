@@ -87,6 +87,26 @@ spinlock file_table_lock;
 vnode_fops vn_fops;
 kcfs_vops kc_vops;
 
-int fileread(file* f, char* buf, size_t sz) {
-  return -1;  
+void file_incref(file* f) {
+  f->ops->fo_incref(f);
+}
+
+void file_deccref(file* f) {
+  f->ops->fo_decref(f);
+}
+
+int file_read(file* f, char* buf, size_t sz) {
+  return f->ops->fo_read(f, buf, sz);  
+}
+
+int file_write(file* f, char* buf, size_t sz) {
+  return f->ops->fo_write(f, buf, sz);  
+}
+
+void vnode_incref(vnode* vn) {
+  vn->ops->vop_incref(vn);
+}
+
+void vnode_decref(vnode* vn) {
+  vn->ops->vop_decref(vn);
 }
