@@ -35,27 +35,30 @@ void kernel_start(const char* command) {
   }
 
   // set up file table
-  spinlock_guard guard(file_table_lock);
-  for (int i = 0; i < N_FILE; i++) {
-    spinlock_guard guard(file_table[i].file_lock);
-    file_table[i].type = FTYPE_NONE;
+  {
+    spinlock_guard guard(file_table_lock);
+    for (int i = 0; i < N_FILE; i++) {
+      spinlock_guard guard_file(file_table[i].file_lock);
+      file_table[i].type = FTYPE_NONE;
+    }
   }
 
   // set up keyboard/console vnode
-  vnode* kcvn = knew<vnode>(kcfs_ops);
+  vnode* kcvn = knew<vnode>(&kc_vops);
   {
-    spinlock_guard guard2(kcvn->refcount_lock);
-    kcvn->refcount = 0;
+    spinlock_guard guard(kcvn->refcount_lock);
+    kcvn->refcount = 1; // ??? is this incremented per file pointing to this vnode or what
   }
 
   {
-    spinlock_guard guard3(file_table[i].file_lock);
+    spinlock_guard guard(file_table_lock);
+    spinlock_guard guard_file(file_table[0].file_lock);
     file_table[0].type = FTYPE_VNODE;
-    file_table[0].refcount_ = 1; // ???
-    file_table[0].flags = O_RDWR;
+    file_table[0].refcount_ = 0; 
+    file_table[0].flags = FREAD | FWRITE;
     file_table[0].off_ = 0;
     file_table[0].vnode_ = kcvn;
-    file_table[0].ops = vn_fops;
+    file_table[0].ops = &vn_fops;
   }
   
   // start init
@@ -100,7 +103,10 @@ void start_initial_process(pid_t pid, const char* name) {
   p->regs_->reg_rsp = MEMSIZE_VIRTUAL;
 
   // initialize fd table
-  for (int i = 0; i < N_FILEDESC; i++) {
+  for (int i = 0; i < 3; i++) {
+    p->fd_table[i] = 0; // keyboard console stuff: magic number?
+  }
+  for (int i = 3; i < N_FILEDESC; i++) {
     p->fd_table[i] = FD_EMPTY;
   }
 

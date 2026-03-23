@@ -16,6 +16,7 @@ struct proc_loader;
 struct elf_program;
 #define PROC_RUNNABLE 1
 #define CANARY_VALUE 0x16101610
+#define N_FILEDESC 16 /* size of per-process file descriptor table */
 
 
 // kernel.hh

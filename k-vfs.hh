@@ -1,10 +1,9 @@
-#include "kernel.hh"
+#include "k-devices.hh"
 
 // k-vfs.cc
 //
 //    Virtual file system
 
-#define N_FILEDESC 16 /* size of per-process file descriptor table */
 #define N_FILE 128 /* global file system file table count */
 
 #define FD_EMPTY 255  /* "this fd slot is empty" */
@@ -13,7 +12,8 @@
 #define	FTYPE_VNODE	1	/* file */
 #define	FTYPE_PIPE	2	/* pipe */
 
-#define O_RDWR 0
+#define	FREAD		0x0001
+#define	FWRITE		0x0002
 
 struct vnode;
 struct file_ops;
@@ -28,8 +28,6 @@ struct file {
   vnode* vnode_;
 
   file_ops* ops;
-  file(file_ops* f_ops): ops(f_ops) {
-  }
 };
 
 struct uio { /* "user input output"? maybe? */
@@ -143,3 +141,7 @@ struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
 
 static vnode_fops vn_fops;
 static kcfs_vops kc_vops;
+
+int fileread(file* f, char* buf, size_t sz) {
+  return -1;  
+}
