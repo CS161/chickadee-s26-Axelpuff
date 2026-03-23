@@ -60,8 +60,8 @@ KERNEL_OBJS = $(OBJDIR)/k-exception.ko \
 	$(OBJDIR)/lib.ko $(OBJDIR)/crc32c.ko \
 	$(OBJDIR)/k-ahci.ko $(OBJDIR)/k-chkfs.ko $(OBJDIR)/k-chkfsiter.ko \
 	$(OBJDIR)/k-memviewer.ko $(OBJDIR)/k-testwait.ko \
-	$(OBJDIR)/k-initfs.ko
-
+	$(OBJDIR)/k-initfs.ko \
+	$(OBJDIR)/k-vfs.ko
 # Add your own kernel object files, if any, here:
 
 
