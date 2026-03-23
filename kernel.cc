@@ -5,6 +5,7 @@
 #include "k-chkfsiter.hh"
 #include "k-devices.hh"
 #include "k-vmiter.hh"
+#include "k-vfs.hh"
 #include "obj/k-firstprocess.h"
 #include <cinttypes>
 
@@ -677,12 +678,6 @@ uintptr_t proc::syscall_read(regstate* regs) {
     return 0;
   }
 
-  // Your code here!
-  // * Read from open file `fd` (reg_rdi), rather than `keyboardstate`.
-  auto& kbd = keyboardstate::get();
-  spinlock_guard guard(kbd.lock_);
-  // auto irqs = kbd.lock_.lock();
-  
   // Validate the read buffer.
   if (VA_LOWEND - sz < addr) {
     return E_FAULT;
@@ -692,45 +687,8 @@ uintptr_t proc::syscall_read(regstate* regs) {
     return E_FAULT;
   }
 
-  // mark that we are now reading from the keyboard
-  // (so `q` should not power off)
-  if (kbd.state_ == kbd.boot) {
-    kbd.state_ = kbd.input;
-  }
-
-  // yield until a line is available
-  // (special case: do not block if the user wants to read 0 bytes)
-  // while (sz != 0 && kbd.eol_ == 0) {
-  //   kbd.lock_.unlock(irqs);
-  //   yield();
-  //   irqs = kbd.lock_.lock();
-  // }
-
-  waiter w;
-  w.wait_until(kbd.wq_, [&] () {
-      return (sz == 0 || kbd.eol_ != 0);
-  }, guard);
-
-
-  // read that line or lines
-  size_t n = 0;
-  while (kbd.eol_ != 0 && n < sz) {
-    if (kbd.buf_[kbd.pos_] == 0x04) {
-      // Ctrl-D means EOF
-      if (n == 0) {
-	kbd.consume(1);
-      }
-      break;
-    } else {
-      *reinterpret_cast<char*>(addr) = kbd.buf_[kbd.pos_];
-      ++addr;
-      ++n;
-      kbd.consume(1);
-    }
-  }
-
-  // kbd.lock_.unlock(irqs);
-  return n;
+  // !!! TBA fd -> file table -> vfs helper function call
+  return 0;
 }
 
 uintptr_t proc::syscall_write(regstate* regs) {
@@ -739,9 +697,9 @@ uintptr_t proc::syscall_write(regstate* regs) {
 
   uintptr_t addr = regs->reg_rsi;
   size_t sz = regs->reg_rdx;
-  log_printf("addr: %zu\n", addr);
-  log_printf("sz: %zu\n", sz);
-  log_printf("memsize virt: %zu\n", MEMSIZE_VIRTUAL);
+  // log_printf("addr: %zu\n", addr);
+  // log_printf("sz: %zu\n", sz);
+  // log_printf("memsize virt: %zu\n", MEMSIZE_VIRTUAL);
 
   // Low-canonical write of size 0 always valid
   if (sz == 0 && addr < VA_LOWEND) {
@@ -759,17 +717,9 @@ uintptr_t proc::syscall_write(regstate* regs) {
   if (!(it.range_perm(sz) & (PTE_P | PTE_U))) {
     return E_FAULT;
   }
-  
-  auto& csl = consolestate::get();
-  spinlock_guard guard(csl.lock_);
-  size_t n = 0;
-  while (n < sz) {
-    int ch = *reinterpret_cast<const char*>(addr);
-    ++addr;
-    ++n;
-    console_printf(CS_WHITE "%c", ch);
-  }
-  return n;
+
+  // !!! TBA fd -> file table -> vfs helper function call
+  return 0;
 }
 
 uintptr_t proc::syscall_readdiskfile(regstate* regs) {
