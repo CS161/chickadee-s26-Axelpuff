@@ -34,6 +34,30 @@ void kernel_start(const char* command) {
     ptable[i] = nullptr;
   }
 
+  // set up file table
+  spinlock_guard guard(file_table_lock);
+  for (int i = 0; i < N_FILE; i++) {
+    spinlock_guard guard(file_table[i].file_lock);
+    file_table[i].type = FTYPE_NONE;
+  }
+
+  // set up keyboard/console vnode
+  vnode* kcvn = knew<vnode>(kcfs_ops);
+  {
+    spinlock_guard guard2(kcvn->refcount_lock);
+    kcvn->refcount = 0;
+  }
+
+  {
+    spinlock_guard guard3(file_table[i].file_lock);
+    file_table[0].type = FTYPE_VNODE;
+    file_table[0].refcount_ = 1; // ???
+    file_table[0].flags = O_RDWR;
+    file_table[0].off_ = 0;
+    file_table[0].vnode_ = kcvn;
+    file_table[0].ops = vn_fops;
+  }
+  
   // start init
   start_initial_process(1, "init");
 
@@ -74,6 +98,11 @@ void start_initial_process(pid_t pid, const char* name) {
   assert(stkpg);
   vmiter(p, MEMSIZE_VIRTUAL - PAGESIZE).map(stkpg, PTE_PWU);
   p->regs_->reg_rsp = MEMSIZE_VIRTUAL;
+
+  // initialize fd table
+  for (int i = 0; i < N_FILEDESC; i++) {
+    p->fd_table[i] = FD_EMPTY;
+  }
 
   // map console
   vmiter(p, ktext2pa(console)).map(console, PTE_PWU);

@@ -13,6 +13,8 @@
 #define	FTYPE_VNODE	1	/* file */
 #define	FTYPE_PIPE	2	/* pipe */
 
+#define O_RDWR 0
+
 struct vnode;
 struct file_ops;
 struct vnode_ops;
@@ -25,7 +27,9 @@ struct file {
   off_t off_;
   vnode* vnode_;
 
-  const file_ops* ops;
+  file_ops* ops;
+  file(file_ops* f_ops): ops(f_ops) {
+  }
 };
 
 struct uio { /* "user input output"? maybe? */
@@ -39,6 +43,8 @@ struct vnode {
   spinlock refcount_lock;
 
   const vnode_ops* ops;
+  vnode(vnode_ops* vn_ops): ops(vn_ops) {
+  }
 };
 
 struct file_ops {

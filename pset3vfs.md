@@ -1,7 +1,7 @@
 ```c++
 #define N_FILEDESC 16
 #define N_FILE 128
-#define FD_EMPTY 255  /* "this fd slot is empty" */
+#define FD_EMPTY 0xFFFF  /* "this fd slot is empty" */
 
 #define	FTYPE_NONE	0	/* not yet initialized */
 #define	FTYPE_VNODE	1	/* file */
