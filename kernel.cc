@@ -727,6 +727,7 @@ uintptr_t proc::syscall_read(regstate* regs) {
   // This is a slow system call, so allow interrupts by default
   sti();
 
+  int fd = regs->reg_rdi;
   uintptr_t addr = regs->reg_rsi;
   size_t sz = regs->reg_rdx;
 
@@ -744,15 +745,25 @@ uintptr_t proc::syscall_read(regstate* regs) {
     return E_FAULT;
   }
 
-
-  // !!! TBA fd -> file table -> vfs helper function call
-  return 0;
+  // Check that fd is valid
+  if (fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+    return E_BADF;
+  }
+  file* f;
+  {
+    spinlock_guard guard(file_table_lock);
+    f = &(file_table[fd_table[fd]]);
+    assert(f->type != FTYPE_NONE);
+  }
+  // ??? !!! To set a file to none, a thread must obtain both the file_table_lock and the file_lock, in that order
+  return file_read(f, reinterpret_cast<char*>(addr), sz);
 }
 
 uintptr_t proc::syscall_write(regstate* regs) {
   // This is a slow system call, so allow interrupts by default
   sti();
 
+  int fd = regs->reg_rdi;
   uintptr_t addr = regs->reg_rsi;
   size_t sz = regs->reg_rdx;
   // log_printf("addr: %zu\n", addr);
@@ -776,8 +787,18 @@ uintptr_t proc::syscall_write(regstate* regs) {
     return E_FAULT;
   }
 
-  // !!! TBA fd -> file table -> vfs helper function call
-  return 0;
+  // Check that fd is valid
+  if (fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+    return E_BADF;
+  }
+  file* f;
+  {
+    spinlock_guard guard(file_table_lock);
+    f = &(file_table[fd_table[fd]]);
+    assert(f->type != FTYPE_NONE);
+  }
+  // ??? !!! To set a file to none, a thread must obtain both the file_table_lock and the file_lock, in that order
+  return file_write(f, reinterpret_cast<char*>(addr), sz);
 }
 
 uintptr_t proc::syscall_readdiskfile(regstate* regs) {
