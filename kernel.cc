@@ -445,7 +445,7 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_CLOSE: {
     spinlock_guard guard(fd_table_lock);
     int fd = regs->reg_rdi;
-    if (fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
       return E_BADF;
     }
     return close_fd(fd, fd_table); // this should just be 0 since right now close_fd always returns 0
@@ -456,15 +456,24 @@ uintptr_t proc::syscall(regstate* regs) {
     int oldfd = regs->reg_rdi;
     int newfd = regs->reg_rsi;
     // Validate arguments
-    if (oldfd == newfd) {
-      return E_INVAL;
-    }
-    if (oldfd >= N_FILEDESC || fd_table[oldfd] == FD_EMPTY || newfd >= N_FILEDESC) {
+    if (oldfd < 0
+	|| oldfd >= N_FILEDESC
+	|| fd_table[oldfd] == FD_EMPTY
+	|| newfd < 0
+	|| newfd >= N_FILEDESC) {
       return E_BADF;
     }
+    if (oldfd == newfd) {
+      return newfd;
+    }
     // Atomically close newfd (silently, error is ignored) and replace
-    close_fd(newfd, fd_table);
+    if (fd_table[newfd] != FD_EMPTY) {
+      close_fd(newfd, fd_table);
+    }
     fd_table[newfd] = fd_table[oldfd];
+    // Increment ref count of file
+    spinlock_guard guard_f(file_table_lock);
+    file_incref(&file_table[fd_table[newfd]]);
     return newfd;
   }
 
@@ -784,16 +793,16 @@ uintptr_t proc::syscall_read(regstate* regs) {
     return E_FAULT;
   }
 
+  spinlock_guard guard(fd_table_lock);  
   // Check that fd is valid
-  if (fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+  if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
     return E_BADF;
   }
+  
   file* f;
-  {
-    spinlock_guard guard(file_table_lock);
-    f = &(file_table[fd_table[fd]]);
-    assert(f->type != FTYPE_NONE);
-  }
+  spinlock_guard guard_file(file_table_lock);
+  f = &(file_table[fd_table[fd]]);
+  assert(f->type != FTYPE_NONE);
   // ??? !!! To set a file to none, a thread must obtain both the file_table_lock and the file_lock, in that order
   return file_read(f, reinterpret_cast<char*>(addr), sz);
 }
@@ -814,28 +823,24 @@ uintptr_t proc::syscall_write(regstate* regs) {
     return 0;
   }
   
-  // Your code here!
-  // * Write to open file `fd` (reg_rdi), rather than `consolestate`.
-  // * Validate the write buffer.
   if (VA_LOWEND - sz < addr) {
-    log_printf("nah bruh\n");
     return E_FAULT;
   }
   vmiter it(this, addr);
   if (!(it.range_perm(sz) & (PTE_P | PTE_U))) {
     return E_FAULT;
   }
-
+  
+  spinlock_guard guard(fd_table_lock);
   // Check that fd is valid
-  if (fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+  if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
     return E_BADF;
   }
+  
   file* f;
-  {
-    spinlock_guard guard(file_table_lock);
-    f = &(file_table[fd_table[fd]]);
-    assert(f->type != FTYPE_NONE);
-  }
+  spinlock_guard guard_file(file_table_lock);
+  f = &(file_table[fd_table[fd]]);
+  assert(f->type != FTYPE_NONE);
   // ??? !!! To set a file to none, a thread must obtain both the file_table_lock and the file_lock, in that order
   return file_write(f, reinterpret_cast<char*>(addr), sz);
 }
