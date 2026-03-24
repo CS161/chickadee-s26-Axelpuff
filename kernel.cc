@@ -38,7 +38,7 @@ void kernel_start(const char* command) {
   {
     spinlock_guard guard(file_table_lock);
     for (int i = 0; i < N_FILE; i++) {
-      // spinlock_guard guard_file(file_table[i].file_lock);
+      spinlock_guard guard_file(file_table[i].file_lock);
       file_table[i].type = FTYPE_NONE;
     }
     init_kc_file(&file_table[KC_FILE_NUM]);
@@ -375,6 +375,16 @@ uintptr_t proc::syscall(regstate* regs) {
     regs_ = regs; // ??? inefficient? this state is never used
     
     {
+      // decrement fds
+      spinlock_guard guard_f(file_table_lock);
+      for (int i = 0; i < N_FILEDESC; i++) {
+	if (fd_table[i] != FD_EMPTY) {
+	  file_decref(&file_table[fd_table[i]]);
+	}
+      }
+    }
+    
+    {
       spinlock_guard guard_h(phierarchy_lock);
       spinlock_guard guard(ptable_lock);
       // mark as zombie
@@ -674,14 +684,23 @@ int proc::syscall_fork(regstate* regs) {
       p->parent_id_ = this->id_;
       p->init_user(child_pagetable);
       *(p->regs_) = *regs;
-      // memcpy(p->regs_, regs, sizeof(regstate));
       p->regs_->reg_rax = 0;    
-      ptable[pid] = p;
-      
+      ptable[pid] = p;      
       // log_printf("Parenting %ld\n", p->id_);
       this->children.push_front(p);
       // log_printf("Done parenting %ld\n", p->id_);
   }
+
+  // copy fd_table, increment refcounts
+  spinlock_guard guard_f(file_table_lock); // need this since accesses into file table can be non-sequential
+  for (int i = 0; i < N_FILEDESC; i++) {
+    p->fd_table[i] = fd_table[i];
+    if (p->fd_table[i] != FD_EMPTY) {
+      file_incref(&file_table[fd_table[i]]);
+      // log_printf("ok: %i\n", i);
+    }
+  }
+
   assert(pid >= 0);
   // add to run queue
   cpus[pid % ncpu].enqueue(p);
@@ -724,6 +743,7 @@ uintptr_t proc::syscall_read(regstate* regs) {
   if (!(it.range_perm(sz) & (PTE_P | PTE_W | PTE_U))) {
     return E_FAULT;
   }
+
 
   // !!! TBA fd -> file table -> vfs helper function call
   return 0;

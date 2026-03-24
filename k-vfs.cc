@@ -9,9 +9,11 @@ int vnode_fops::fo_decref(file* f) const {
   // lock here?
   assert(f->refcount_ > 0);
   if (--f->refcount_ == 0) {
-    if (vnode_decref(f->vnode_) == 0) {
-      kfree(f->vnode_); // caller should then free this file slot
+    if (f->vnode_->ops->vop_decref(f->vnode_) == 0) {
+      kfree(f->vnode_);
     }
+    f->type = FTYPE_NONE;
+    // caller doesn't really have to do anything
   }
   return f->refcount_; 
 }
@@ -106,9 +108,12 @@ int file_incref(file* f) {
   return f->ops->fo_incref(f);
 }
 
-int file_deccref(file* f) {
+int file_decref(file* f) {
   spinlock_guard guard(f->file_lock);
-  return f->ops->fo_decref(f);
+  int bluh = f->ops->fo_decref(f);
+  log_printf("da file is at %i refs\n", bluh);
+  return bluh;
+  // return f->ops->fo_decref(f);
 }
 
 int file_read(file* f, char* buf, size_t sz) {
