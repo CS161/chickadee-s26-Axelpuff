@@ -5,6 +5,17 @@
 //
 //    Virtual file system
 
+int vnode_fops::fo_decref(file* f) const {
+  // lock here?
+  assert(f->refcount_ > 0);
+  if (--f->refcount_ == 0) {
+    if (vnode_decref(f->vnode_) == 0) {
+      kfree(f->vnode_); // caller should then free this file slot
+    }
+  }
+  return f->refcount_; 
+}
+
 int vnode_fops::fo_read(file* f, char* buf, size_t sz) const {
   // add argument verification?
   spinlock_guard guard(f->file_lock);
@@ -28,7 +39,12 @@ int vnode_fops::fo_write(file* f, char* buf, size_t sz) const {
   arg.sz = sz;
   return f->vnode_->ops->vop_write(f->vnode_, &arg);
 }
-  
+
+int kcfs_vops::vop_decref(vnode* vn) const {
+  assert(vn->refcount > 0);
+  return --vn->refcount; // caller should then free this vnode
+}
+
 int kcfs_vops::vop_read(vnode* vn, uio* uio) const {
   auto& kbd = keyboardstate::get();
   spinlock_guard guard(kbd.lock_);
@@ -87,12 +103,12 @@ spinlock file_table_lock;
 vnode_fops vn_fops;
 kcfs_vops kc_vops;
 
-void file_incref(file* f) {
-  f->ops->fo_incref(f);
+int file_incref(file* f) {
+  return f->ops->fo_incref(f);
 }
 
-void file_deccref(file* f) {
-  f->ops->fo_decref(f);
+int file_deccref(file* f) {
+  return f->ops->fo_decref(f);
 }
 
 int file_read(file* f, char* buf, size_t sz) {
@@ -103,10 +119,28 @@ int file_write(file* f, char* buf, size_t sz) {
   return f->ops->fo_write(f, buf, sz);  
 }
 
-void vnode_incref(vnode* vn) {
-  vn->ops->vop_incref(vn);
+int vnode_incref(vnode* vn) {
+  return vn->ops->vop_incref(vn);
 }
 
-void vnode_decref(vnode* vn) {
-  vn->ops->vop_decref(vn);
+int vnode_decref(vnode* vn) {
+  return vn->ops->vop_decref(vn);
+}
+
+void init_kc_file(file* kc_file) {
+  // set up keyboard/console vnode
+  vnode* kcvn = knew<vnode>(&kc_vops);
+  {
+    spinlock_guard guard(kcvn->refcount_lock);
+    kcvn->refcount = 1; // ??? is this incremented per file pointing to this vnode or what
+  }
+  {
+    spinlock_guard guard_file(kc_file->file_lock);
+    kc_file->type = FTYPE_VNODE;
+    kc_file->refcount_ = 0; 
+    kc_file->flags = FREAD | FWRITE;
+    kc_file->off_ = 0;
+    kc_file->vnode_ = kcvn;
+    kc_file->ops = &vn_fops;
+  }
 }

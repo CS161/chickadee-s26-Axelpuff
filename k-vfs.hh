@@ -48,24 +48,20 @@ struct vnode {
 
 struct file_ops {
   virtual ~file_ops() = default;
-  inline void fo_incref(file* f) const {
-    ++f->refcount_;
+  inline int fo_incref(file* f) const {
+    return ++f->refcount_;
   };
-  inline void fo_decref(file* f) const {
-    --f->refcount_;
-  };
+  virtual int fo_decref(file* f) const = 0;
   virtual int fo_read(file* f, char* buf, size_t sz) const = 0;
   virtual int fo_write(file* f, char* buf, size_t sz) const = 0;
 };
 
 struct vnode_ops {
   virtual ~vnode_ops() = default;
-  inline void vop_incref(vnode* vn) const {
-    ++vn->refcount;
+  inline int vop_incref(vnode* vn) const {
+    return ++vn->refcount;
   };
-  inline void vop_decref(vnode* vn) const {
-    --vn->refcount;
-  };
+  virtual int vop_decref(vnode* vn) const = 0;
   virtual int vop_read(vnode* vn, uio* uio) const = 0;
   virtual int vop_write(vnode* vn, uio* uio) const = 0;
 };
@@ -74,15 +70,13 @@ extern file file_table[N_FILE];
 extern spinlock file_table_lock;
 
 struct vnode_fops : public file_ops { // i.e. as opposed to pipe_fops
-  // void fo_incref(file* f) const override;
-  // void fo_decref(file* f) const override;
+  int fo_decref(file* f) const override;
   int fo_read(file* f, char* buf, size_t sz) const override;
   int fo_write(file* f, char* buf, size_t sz) const override;
 };
   
 struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
-  // void vop_incref(vnode* vn) const override;
-  // void vop_decref(vnode* vn) const override;
+  int vop_decref(vnode* vn) const override;
   int vop_read(vnode* vn, uio* uio) const override;  
   int vop_write(vnode* vn, uio* uio) const override;
 };
@@ -90,10 +84,12 @@ struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
 extern vnode_fops vn_fops;
 extern kcfs_vops kc_vops;
 
-void file_incref(file* f);
-void file_decref(file* f);
+int file_incref(file* f);
+int file_decref(file* f);
 int file_read(file* f, char* buf, size_t sz);
 int file_write(file* f, char* buf, size_t sz);
 
-void vnode_incref(vnode* vn);
-void vnode_decref(vnode* vn);
+int vnode_incref(vnode* vn);
+int vnode_decref(vnode* vn);
+
+void init_kc_file(file* f);

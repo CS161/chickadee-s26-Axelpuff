@@ -41,26 +41,27 @@ void kernel_start(const char* command) {
       spinlock_guard guard_file(file_table[i].file_lock);
       file_table[i].type = FTYPE_NONE;
     }
+    init_kc_file(&file_table[KC_FILE_NUM]);
   }
 
-  // set up keyboard/console vnode
-  vnode* kcvn = knew<vnode>(&kc_vops);
-  {
-    spinlock_guard guard(kcvn->refcount_lock);
-    kcvn->refcount = 1; // ??? is this incremented per file pointing to this vnode or what
-  }
+  // // set up keyboard/console vnode
+  // vnode* kcvn = knew<vnode>(&kc_vops);
+  // {
+  //   spinlock_guard guard(kcvn->refcount_lock);
+  //   kcvn->refcount = 1; // ??? is this incremented per file pointing to this vnode or what
+  // }
 
-  {
-    file* kc_file = &file_table[KC_FILE_NUM];
-    spinlock_guard guard(file_table_lock);
-    spinlock_guard guard_file(kc_file->file_lock);
-    kc_file->type = FTYPE_VNODE;
-    kc_file->refcount_ = 0; 
-    kc_file->flags = FREAD | FWRITE;
-    kc_file->off_ = 0;
-    kc_file->vnode_ = kcvn;
-    kc_file->ops = &vn_fops;
-  }
+  // {
+  //   file* kc_file = &file_table[KC_FILE_NUM];
+  //   spinlock_guard guard(file_table_lock);
+  //   spinlock_guard guard_file(kc_file->file_lock);
+  //   kc_file->type = FTYPE_VNODE;
+  //   kc_file->refcount_ = 0; 
+  //   kc_file->flags = FREAD | FWRITE;
+  //   kc_file->off_ = 0;
+  //   kc_file->vnode_ = kcvn;
+  //   kc_file->ops = &vn_fops;
+  // }
   
   // start init
   start_initial_process(1, "init");
