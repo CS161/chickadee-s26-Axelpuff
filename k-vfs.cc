@@ -18,7 +18,6 @@ int vnode_fops::fo_decref(file* f) const {
 
 int vnode_fops::fo_read(file* f, char* buf, size_t sz) const {
   // add argument verification?
-  spinlock_guard guard(f->file_lock);
   uio arg;
   arg.off = f->off_;
   f->off_ += sz;
@@ -30,7 +29,6 @@ int vnode_fops::fo_read(file* f, char* buf, size_t sz) const {
 
 int vnode_fops::fo_write(file* f, char* buf, size_t sz) const {
   // add argument verification?
-  spinlock_guard guard(f->file_lock);
   uio arg;
   arg.off = f->off_;
   f->off_ += sz;
@@ -104,26 +102,32 @@ vnode_fops vn_fops;
 kcfs_vops kc_vops;
 
 int file_incref(file* f) {
+  spinlock_guard guard(f->file_lock);
   return f->ops->fo_incref(f);
 }
 
 int file_deccref(file* f) {
+  spinlock_guard guard(f->file_lock);
   return f->ops->fo_decref(f);
 }
 
 int file_read(file* f, char* buf, size_t sz) {
+  spinlock_guard guard(f->file_lock);
   return f->ops->fo_read(f, buf, sz);  
 }
 
 int file_write(file* f, char* buf, size_t sz) {
+  spinlock_guard guard(f->file_lock);
   return f->ops->fo_write(f, buf, sz);  
 }
 
 int vnode_incref(vnode* vn) {
+  spinlock_guard guard(vn->refcount_lock);
   return vn->ops->vop_incref(vn);
 }
 
 int vnode_decref(vnode* vn) {
+  spinlock_guard guard(vn->refcount_lock);
   return vn->ops->vop_decref(vn);
 }
 

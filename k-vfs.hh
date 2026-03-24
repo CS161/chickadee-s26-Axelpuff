@@ -46,6 +46,9 @@ struct vnode {
   }
 };
 
+// ops methods SHOULD NOT BE CALLED by external code
+// external code should only use the helper methods below
+
 struct file_ops {
   virtual ~file_ops() = default;
   inline int fo_incref(file* f) const {

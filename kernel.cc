@@ -38,7 +38,7 @@ void kernel_start(const char* command) {
   {
     spinlock_guard guard(file_table_lock);
     for (int i = 0; i < N_FILE; i++) {
-      spinlock_guard guard_file(file_table[i].file_lock);
+      // spinlock_guard guard_file(file_table[i].file_lock);
       file_table[i].type = FTYPE_NONE;
     }
     init_kc_file(&file_table[KC_FILE_NUM]);
