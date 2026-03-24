@@ -57,6 +57,7 @@ struct __attribute__((aligned(4096))) proc {
   bool child_exited_ = 0;
 
   unsigned int fd_table[N_FILEDESC];
+  spinlock fd_table_lock;
 
     // This member must come last
     int stack_bottom_canary = CANARY_VALUE;

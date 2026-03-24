@@ -105,6 +105,7 @@ void start_initial_process(pid_t pid, const char* name) {
   p->regs_->reg_rsp = MEMSIZE_VIRTUAL;
 
   // initialize fd table
+  // (do I need to get a lock here even though nothing else should be touching this?)
   for (int i = 0; i < 3; i++) {
     p->fd_table[i] = KC_FILE_NUM;
     file_incref(&file_table[KC_FILE_NUM]);
@@ -265,6 +266,17 @@ int proc::cleanup_and_return_status(proc* p) {
   return exit_status;
 }
 
+// caller should validate that fd is in range and not empty
+// caller should hold fd_table_lock (must be acquired before file_table_lock in all cases)
+int close_fd(int fd, unsigned int* fd_table) {
+  {
+    spinlock_guard guard(file_table_lock);
+    file_decref(&file_table[fd_table[fd]]);
+  }
+  fd_table[fd] = FD_EMPTY;
+  return 0;
+}
+
 // proc::syscall(regs)
 //    System call handler.
 //
@@ -376,10 +388,10 @@ uintptr_t proc::syscall(regstate* regs) {
     
     {
       // decrement fds
-      spinlock_guard guard_f(file_table_lock);
+      spinlock_guard guard_f(fd_table_lock);
       for (int i = 0; i < N_FILEDESC; i++) {
 	if (fd_table[i] != FD_EMPTY) {
-	  file_decref(&file_table[fd_table[i]]);
+	  close_fd(i, fd_table);
 	}
       }
     }
@@ -428,6 +440,32 @@ uintptr_t proc::syscall(regstate* regs) {
       drop = 1;
     }
     return bufcache::get().sync(drop);
+  }
+
+  case SYSCALL_CLOSE: {
+    spinlock_guard guard(fd_table_lock);
+    int fd = regs->reg_rdi;
+    if (fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+      return E_BADF;
+    }
+    return close_fd(fd, fd_table); // this should just be 0 since right now close_fd always returns 0
+  }
+
+  case SYSCALL_DUP2: {
+    spinlock_guard guard(fd_table_lock);
+    int oldfd = regs->reg_rdi;
+    int newfd = regs->reg_rsi;
+    // Validate arguments
+    if (oldfd == newfd) {
+      return E_INVAL;
+    }
+    if (oldfd >= N_FILEDESC || fd_table[oldfd] == FD_EMPTY || newfd >= N_FILEDESC) {
+      return E_BADF;
+    }
+    // Atomically close newfd (silently, error is ignored) and replace
+    close_fd(newfd, fd_table);
+    fd_table[newfd] = fd_table[oldfd];
+    return newfd;
   }
 
   case SYSCALL_MSLEEP: {
@@ -692,10 +730,11 @@ int proc::syscall_fork(regstate* regs) {
   }
 
   // copy fd_table, increment refcounts
-  spinlock_guard guard_f(file_table_lock); // need this since accesses into file table can be non-sequential
+  spinlock_guard guard(fd_table_lock);
   for (int i = 0; i < N_FILEDESC; i++) {
     p->fd_table[i] = fd_table[i];
     if (p->fd_table[i] != FD_EMPTY) {
+      spinlock_guard guard_f(file_table_lock);
       file_incref(&file_table[fd_table[i]]);
       // log_printf("ok: %i\n", i);
     }
