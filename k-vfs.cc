@@ -21,9 +21,12 @@ int vnode_fops::fo_decref(file* f) const {
 int vnode_fops::fo_read(file* f, char* buf, size_t sz) const {
   // add argument verification?
   uio arg;
-  arg.off = f->off_;
-  f->off_ += sz;
-  // !!! EOF handling
+  {
+    spinlock_guard guard(f->file_lock);
+    arg.off = f->off_;
+    f->off_ += sz;
+  }
+  // !!! EOF handling, off overflow?
   arg.buf = buf;
   arg.sz = sz;
   return f->vnode_->ops->vop_read(f->vnode_, &arg); // is this sus
@@ -32,9 +35,12 @@ int vnode_fops::fo_read(file* f, char* buf, size_t sz) const {
 int vnode_fops::fo_write(file* f, char* buf, size_t sz) const {
   // add argument verification?
   uio arg;
-  arg.off = f->off_;
-  f->off_ += sz;
-  // !!! EOF handling
+  {
+    spinlock_guard guard(f->file_lock);
+    arg.off = f->off_;
+    f->off_ += sz;
+  }
+  // !!! EOF handling, off overflow?
   arg.buf = buf;
   arg.sz = sz;
   return f->vnode_->ops->vop_write(f->vnode_, &arg);
@@ -117,12 +123,12 @@ int file_decref(file* f) {
 }
 
 int file_read(file* f, char* buf, size_t sz) {
-  spinlock_guard guard(f->file_lock);
+  // spinlock_guard guard(f->file_lock);
   return f->ops->fo_read(f, buf, sz);  
 }
 
 int file_write(file* f, char* buf, size_t sz) {
-  spinlock_guard guard(f->file_lock);
+  // spinlock_guard guard(f->file_lock);
   return f->ops->fo_write(f, buf, sz);  
 }
 
