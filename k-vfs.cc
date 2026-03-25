@@ -111,7 +111,9 @@ int pipe_fops::fo_decref(file* f) const {
 }
 
 int pipe_fops::fo_read(file* f, char* buf, size_t sz) const {
-  if (f->type == FWRITE) {
+  if (f->flags == FWRITE) {
+    assert(f->flags == FWRITE);
+    log_printf("trying to read from write end\n");
     return E_BADF;
   }
   if (f->pipe_->write_closed_ && f->pipe_->is_empty()) {
@@ -121,7 +123,8 @@ int pipe_fops::fo_read(file* f, char* buf, size_t sz) const {
 }
 
 int pipe_fops::fo_write(file* f, char* buf, size_t sz) const {
-  if (f->type == FREAD) {
+  if (f->flags == FREAD) {
+    assert(f->flags == FREAD);
     return E_BADF;
   }
   if (f->pipe_->read_closed_) {

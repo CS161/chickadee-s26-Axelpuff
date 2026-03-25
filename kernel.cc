@@ -488,9 +488,11 @@ uintptr_t proc::syscall(regstate* regs) {
     // (If we want really fine grained locking, we can drag the individual file locks out of
     //  this function and then release the table locks after that)
     init_pipe_files(&file_table[read_fileid], &file_table[write_fileid]);
+    assert(file_table[read_fileid].flags == FREAD && file_table[write_fileid].flags == FWRITE);
 
     fd_table[read_fd] = read_fileid;
     fd_table[write_fd] = write_fileid;
+    log_printf("fd %i set to read_fileid, which is file table entry %i\n", read_fd, read_fileid);
     // almost forgot these. should test and see if I get some nice assertion fireworks by removing
     file_incref(&file_table[read_fileid]);
     file_incref(&file_table[write_fileid]);
@@ -844,9 +846,13 @@ uintptr_t proc::syscall_read(regstate* regs) {
 
   spinlock_guard guard(fd_table_lock);  
   // Check that fd is valid
+  log_printf("trying to read from fd %i...\n", fd);
   if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+    log_printf("nope\n", fd);
     return E_BADF;
   }
+  log_printf("it's aight\n", fd);
+  log_printf("points to file %i\n", fd_table[fd]);
   
   file* f;
   spinlock_guard guard_file(file_table_lock);
