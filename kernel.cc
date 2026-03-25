@@ -451,6 +451,55 @@ uintptr_t proc::syscall(regstate* regs) {
     return close_fd(fd, fd_table); // this should just be 0 since right now close_fd always returns 0
   }
 
+  case SYSCALL_PIPE: {
+    // Find fd table slots
+    int read_fd = -1, write_fd = -1;
+    spinlock_guard guard(fd_table_lock);
+    for (int i = 0; i < N_FILEDESC; i++) {
+      if (fd_table[i] == FD_EMPTY) {
+	if (read_fd != -1) {
+	  write_fd = i;
+	  break;
+	}
+	read_fd = i;
+      }
+    }
+    if (write_fd == -1) {
+      return E_MFILE;
+    }
+
+    // Find file table slots
+    int read_fileid = -1, write_fileid = -1;
+    spinlock_guard guard_f(file_table_lock);
+    for (int i = 0; i < N_FILE; i++) {
+      if (file_table[i].type == FTYPE_NONE) {
+	if (read_fileid != -1) {
+	  write_fileid = i;
+	  break;
+	}
+	read_fileid = i;
+      }
+    }
+    if (write_fileid == -1) {
+      return E_NFILE; // I think this is the right one
+    }
+
+    // Initialize pipe
+    // (If we want really fine grained locking, we can drag the individual file locks out of
+    //  this function and then release the table locks after that)
+    init_pipe_files(&file_table[read_fileid], &file_table[write_fileid]);
+
+    fd_table[read_fd] = read_fileid;
+    fd_table[write_fd] = write_fileid;
+    // almost forgot these. should test and see if I get some nice assertion fireworks by removing
+    file_incref(&file_table[read_fileid]);
+    file_incref(&file_table[write_fileid]);
+
+    long rfd = read_fd;
+    long wfd = write_fd;
+    return rfd | (wfd << 32);
+  }
+    
   case SYSCALL_DUP2: {
     spinlock_guard guard(fd_table_lock);
     int oldfd = regs->reg_rdi;

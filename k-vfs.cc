@@ -5,6 +5,47 @@
 //
 //    Virtual file system
 
+ssize_t bbuffer::write(const char* buf, size_t sz) {
+  spinlock_guard guard(lock_);
+  assert(!this->write_closed_);
+  //   waiter w;
+  // w.wait_until(this->wq_, [&] () {
+  //   return (this->blen_ < bcapacity);
+  // }, guard);  
+  size_t pos = 0;
+  while (pos < sz && this->blen_ < bcapacity) {
+    size_t bindex = (this->bpos_ + this->blen_) % bcapacity;
+    size_t bspace = min(bcapacity - bindex, bcapacity - this->blen_);
+    size_t n = min(sz - pos, bspace);
+    memcpy(&this->bbuf_[bindex], &buf[pos], n);
+    this->blen_ += n;
+    pos += n;
+  }
+  if (pos == 0 && sz > 0) {
+    return -1;  // try again
+  } else {
+    return pos;
+  }
+}
+
+ssize_t bbuffer::read(char* buf, size_t sz) {
+  spinlock_guard guard(lock_);
+  size_t pos = 0;
+  while (pos < sz && this->blen_ > 0) {
+    size_t bspace = min(this->blen_, bcapacity - this->bpos_);
+    size_t n = min(sz - pos, bspace);
+    memcpy(&buf[pos], &this->bbuf_[this->bpos_], n);
+    this->bpos_ = (this->bpos_ + n) % bcapacity;
+    this->blen_ -= n;
+    pos += n;
+  }
+  if (pos == 0 && sz > 0 && !this->write_closed_) {
+    return -1;  // try again
+  } else {
+    return pos;
+  }
+}
+
 int vnode_fops::fo_decref(file* f) const {
   // lock here?
   assert(f->refcount_ > 0);
@@ -44,6 +85,49 @@ int vnode_fops::fo_write(file* f, char* buf, size_t sz) const {
   arg.buf = buf;
   arg.sz = sz;
   return f->vnode_->ops->vop_write(f->vnode_, &arg);
+}
+
+int pipe_fops::fo_decref(file* f) const {
+  assert(f->refcount_ > 0);
+  if (--f->refcount_ == 0) {
+    spinlock_guard guard(f->pipe_->lock_);
+    if (f->type == FREAD) {
+      f->pipe_->read_closed_ = true;
+    } else {
+      assert(f->type == FWRITE);
+      f->pipe_->write_closed_ = true;
+    }
+    f->type = FTYPE_NONE;
+    // f->pipe_->wq_.notify_all();
+    if (f->pipe_->read_closed_ && f->pipe_->write_closed_) {
+      // ??? let go of the lock temporarily to let any blocked processes respond
+      //     before blowing up the pipe (does this work? is this needed?)
+      guard.unlock();
+      guard.lock();
+      kfree(f->pipe_);
+    }
+  }
+  return f->refcount_; 
+}
+
+int pipe_fops::fo_read(file* f, char* buf, size_t sz) const {
+  if (f->type == FWRITE) {
+    return E_BADF;
+  }
+  if (f->pipe_->write_closed_ && f->pipe_->is_empty()) {
+    return 0; // EOF
+  }
+  return f->pipe_->read(buf, sz);
+}
+
+int pipe_fops::fo_write(file* f, char* buf, size_t sz) const {
+  if (f->type == FREAD) {
+    return E_BADF;
+  }
+  if (f->pipe_->read_closed_) {
+    return E_PIPE;
+  }
+  return f->pipe_->write(buf, sz);
 }
 
 int kcfs_vops::vop_decref(vnode* vn) const {
@@ -107,6 +191,7 @@ file file_table[N_FILE];
 spinlock file_table_lock;
 
 vnode_fops vn_fops;
+pipe_fops p_fops;
 kcfs_vops kc_vops;
 
 int file_incref(file* f) {
@@ -157,5 +242,25 @@ void init_kc_file(file* kc_file) {
     kc_file->off_ = 0;
     kc_file->vnode_ = kcvn;
     kc_file->ops = &vn_fops;
+  }
+}
+// initialize the two given files as pipe read and write ends
+void init_pipe_files(file* read_file, file* write_file) {
+  bbuffer* pipe = knew<bbuffer>();
+  {
+    spinlock_guard guard_file(read_file->file_lock);
+    read_file->type = FTYPE_PIPE;
+    read_file->refcount_ = 0; 
+    read_file->flags = FREAD;
+    read_file->pipe_ = pipe;
+    read_file->ops = &p_fops;
+  }
+  {
+    spinlock_guard guard_file(write_file->file_lock);
+    write_file->type = FTYPE_PIPE;
+    write_file->refcount_ = 0; 
+    write_file->flags = FWRITE;
+    write_file->pipe_ = pipe;
+    write_file->ops = &p_fops;
   }
 }

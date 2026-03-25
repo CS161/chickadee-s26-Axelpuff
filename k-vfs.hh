@@ -17,6 +17,7 @@
 #define	FWRITE		0x0002
 
 struct vnode;
+struct bbuffer;
 struct file_ops;
 struct vnode_ops;
 
@@ -27,6 +28,7 @@ struct file {
   int flags;
   off_t off_;
   vnode* vnode_;
+  bbuffer* pipe_;
 
   file_ops* ops;
 };
@@ -44,6 +46,24 @@ struct vnode {
   const vnode_ops* ops;
   vnode(vnode_ops* vn_ops): ops(vn_ops) {
   }
+};
+
+struct bbuffer {
+  static constexpr size_t bcapacity = 128;
+  char bbuf_[bcapacity];
+  size_t bpos_ = 0;
+  size_t blen_ = 0;
+  bool write_closed_ = false;
+  bool read_closed_ = false;
+  spinlock lock_;
+  wait_queue wq_;
+
+  ssize_t read(char* buf, size_t sz);
+  ssize_t write(const char* buf, size_t sz);
+  inline int is_empty() {
+    return blen_ == 0;
+  }
+  // void shutdown_write();
 };
 
 // ops methods SHOULD NOT BE CALLED by external code
@@ -77,7 +97,13 @@ struct vnode_fops : public file_ops { // i.e. as opposed to pipe_fops
   int fo_read(file* f, char* buf, size_t sz) const override;
   int fo_write(file* f, char* buf, size_t sz) const override;
 };
-  
+
+struct pipe_fops : public file_ops {
+  int fo_decref(file* f) const override;
+  int fo_read(file* f, char* buf, size_t sz) const override;
+  int fo_write(file* f, char* buf, size_t sz) const override;
+};
+
 struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
   int vop_decref(vnode* vn) const override;
   int vop_read(vnode* vn, uio* uio) const override;  
@@ -85,6 +111,7 @@ struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
 };
 
 extern vnode_fops vn_fops;
+extern pipe_fops p_fops;
 extern kcfs_vops kc_vops;
 
 int file_incref(file* f);
@@ -95,4 +122,5 @@ int file_write(file* f, char* buf, size_t sz);
 int vnode_incref(vnode* vn);
 int vnode_decref(vnode* vn);
 
-void init_kc_file(file* f);
+void init_kc_file(file* kc_file);
+void init_pipe_files(file* read_file, file* write_file);
