@@ -492,8 +492,6 @@ uintptr_t proc::syscall(regstate* regs) {
 
     fd_table[read_fd] = read_fileid;
     fd_table[write_fd] = write_fileid;
-    log_printf("fd %i set to read_fileid, which is file table entry %i\n", read_fd, read_fileid);
-    // almost forgot these. should test and see if I get some nice assertion fireworks by removing
     file_incref(&file_table[read_fileid]);
     file_incref(&file_table[write_fileid]);
 
@@ -843,7 +841,7 @@ uintptr_t proc::syscall_read(regstate* regs) {
   if (!(it.range_perm(sz) & (PTE_P | PTE_W | PTE_U))) {
     return E_FAULT;
   }
-
+  
   file* f;
   irqstate irqs;  
   {
@@ -858,10 +856,13 @@ uintptr_t proc::syscall_read(regstate* regs) {
     assert(f->type != FTYPE_NONE);
     irqs = f->file_lock.lock();
     assert(f->type != FTYPE_NONE);
-    // file_read MUST unlock file_lock, using irqs (this might be very sketchy)
+    // file_read() MUST unlock file_lock once it has obtained its next lock
   }
+  // even though file_lock.lock() (with irq), we need to manually disable interrupts
+  // since the guards going out of scope above re-enable interrupts 
   cli();
-  return file_read(f, reinterpret_cast<char*>(addr), sz, irqs);
+  int n_read = file_read(f, reinterpret_cast<char*>(addr), sz, irqs);
+  return n_read;
 }
 
 uintptr_t proc::syscall_write(regstate* regs) {

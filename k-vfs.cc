@@ -1,5 +1,6 @@
 #include "k-vfs.hh"
 #include "k-devices.hh"
+#include <limits>
 
 // k-vfs.cc
 //
@@ -21,9 +22,7 @@ ssize_t bbuffer::write(const char* buf, size_t sz) {
   if (pos == 0 && sz > 0) {
     return -1; // ??? what should this be, if anything
   } else {
-    log_printf("doing a notify for readers\n");
     this->nonempty_.notify_all();
-    log_printf("done notifying\n");
     return pos;
   }
 }
@@ -44,9 +43,7 @@ ssize_t bbuffer::read(char* buf, size_t sz) {
   if (pos == 0 && sz > 0 && !this->write_closed_) {
     return -1;  // ??? what should this be, if anything
   } else {
-    log_printf("doing a notify for writers\n");
     this->nonfull_.notify_all();      
-    log_printf("done notifying\n");
     return pos;
   }
 }
@@ -64,33 +61,45 @@ int vnode_fops::fo_decref(file* f) const {
   return f->refcount_; 
 }
 
+const off_t max_off = std::numeric_limits<off_t>::max();
+
 int vnode_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
   assert(f->file_lock.is_locked());
-  // !!! should be a flag check here (pipe version has one)
-  uio arg;
-  arg.off = f->off_;
-  f->off_ += sz;
-  // !!! EOF handling, off overflow?
-  arg.buf = buf;
-  arg.sz = sz;
   // Lock handoff
   auto vn_irqs = f->vnode_->refcount_lock.lock();
   f->file_lock.unlock(irqs);
+  
+  if (!(f->flags | FREAD)) {
+    f->vnode_->refcount_lock.unlock(vn_irqs);
+    return E_BADF;
+  }
+  assert(max_off - static_cast<off_t>(sz) > f->off_);
+  
+  uio arg;
+  arg.off = f->off_;
+  f->off_ += sz;
+  arg.buf = buf;
+  arg.sz = sz;
   return f->vnode_->ops->vop_read(f->vnode_, &arg, vn_irqs);
 }
 
 int vnode_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
   assert(f->file_lock.is_locked());
-  // !!! should be a flag check here (pipe version has one)
-  uio arg;
-  arg.off = f->off_;
-  f->off_ += sz;
-  // !!! EOF handling, off overflow?
-  arg.buf = buf;
-  arg.sz = sz;
   // Lock handoff
   auto vn_irqs = f->vnode_->refcount_lock.lock();
   f->file_lock.unlock(irqs);
+  
+  if (!(f->flags | FREAD)) {
+    f->vnode_->refcount_lock.unlock(vn_irqs);
+    return E_BADF;
+  }
+  assert(max_off - static_cast<off_t>(sz) > f->off_);
+
+  uio arg;
+  arg.off = f->off_;
+  f->off_ += sz;
+  arg.buf = buf;
+  arg.sz = sz;
   return f->vnode_->ops->vop_write(f->vnode_, &arg, vn_irqs);
 }
 
@@ -101,12 +110,10 @@ int pipe_fops::fo_decref(file* f) const {
     f->type = FTYPE_NONE;
     if (f->flags == FREAD) {
       f->pipe_->read_closed_ = true;
-      log_printf("Closed a read end\n");
       f->pipe_->nonfull_.notify_all();
     } else {
       assert(f->flags == FWRITE);
       f->pipe_->write_closed_ = true;
-      log_printf("Closed a write end\n");
       f->pipe_->nonempty_.notify_all();      
     }
     if (f->pipe_->read_closed_ && f->pipe_->write_closed_) {
@@ -159,11 +166,9 @@ int pipe_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
   }  
   // blocking logic is here since I don't know how to perform lock handoff otherwise
   waiter w;
-  log_printf("might schedule...\n");
   w.wait_until(f->pipe_->nonfull_, [&] () {
     return (f->pipe_->blen_ < f->pipe_->bcapacity || f->pipe_->read_closed_);
   }, guard);
-  log_printf("we're back\n");
   if (f->pipe_->read_closed_) {
     // I think 0 is appropriate rather than E_BADF because
     // if we got past the initial check in the caller, the read
@@ -249,10 +254,7 @@ int file_incref(file* f) {
 
 int file_decref(file* f) {
   spinlock_guard guard(f->file_lock);
-  int bluh = f->ops->fo_decref(f);
-  log_printf("da file is at %i refs\n", bluh);
-  return bluh;
-  // return f->ops->fo_decref(f);
+  return f->ops->fo_decref(f);
 }
 
 int file_read(file* f, char* buf, size_t sz, irqstate &irqs) {
