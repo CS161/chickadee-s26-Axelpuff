@@ -6,12 +6,9 @@
 //    Virtual file system
 
 ssize_t bbuffer::write(const char* buf, size_t sz) {
-  spinlock_guard guard(lock_);
+  assert(this->lock_.is_locked());
   assert(!this->write_closed_);
-  //   waiter w;
-  // w.wait_until(this->wq_, [&] () {
-  //   return (this->blen_ < bcapacity);
-  // }, guard);  
+  assert(this->blen_ < bcapacity);
   size_t pos = 0;
   while (pos < sz && this->blen_ < bcapacity) {
     size_t bindex = (this->bpos_ + this->blen_) % bcapacity;
@@ -22,14 +19,17 @@ ssize_t bbuffer::write(const char* buf, size_t sz) {
     pos += n;
   }
   if (pos == 0 && sz > 0) {
-    return -1;  // try again
+    return -1; // ??? what should this be, if anything
   } else {
+    this->nonempty_.notify_all();
     return pos;
   }
 }
 
 ssize_t bbuffer::read(char* buf, size_t sz) {
-  spinlock_guard guard(lock_);
+  assert(this->lock_.is_locked());
+  assert(!this->read_closed_);
+  assert(this->blen_ > 0);
   size_t pos = 0;
   while (pos < sz && this->blen_ > 0) {
     size_t bspace = min(this->blen_, bcapacity - this->bpos_);
@@ -40,8 +40,9 @@ ssize_t bbuffer::read(char* buf, size_t sz) {
     pos += n;
   }
   if (pos == 0 && sz > 0 && !this->write_closed_) {
-    return -1;  // try again
+    return -1;  // ??? what should this be, if anything
   } else {
+    this->nonfull_.notify_all();      
     return pos;
   }
 }
@@ -59,31 +60,35 @@ int vnode_fops::fo_decref(file* f) const {
   return f->refcount_; 
 }
 
-int vnode_fops::fo_read(file* f, char* buf, size_t sz) const {
-  // add argument verification?
+int vnode_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
+  assert(f->file_lock.is_locked());
+  // !!! should be a flag check here (pipe version has one)
   uio arg;
-  {
-    spinlock_guard guard(f->file_lock);
-    arg.off = f->off_;
-    f->off_ += sz;
-  }
+  arg.off = f->off_;
+  f->off_ += sz;
   // !!! EOF handling, off overflow?
   arg.buf = buf;
   arg.sz = sz;
-  return f->vnode_->ops->vop_read(f->vnode_, &arg); // is this sus
+  // Lock handoff
+  // auto vn_irqs = f->vnode_->refcount_lock.lock();
+  spinlock_guard guard(f->vnode_->refcount_lock);
+  f->file_lock.unlock(irqs);
+  return f->vnode_->ops->vop_read(f->vnode_, &arg);
 }
 
-int vnode_fops::fo_write(file* f, char* buf, size_t sz) const {
-  // add argument verification?
+int vnode_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
+  assert(f->file_lock.is_locked());
+  // !!! should be a flag check here (pipe version has one)
   uio arg;
-  {
-    spinlock_guard guard(f->file_lock);
-    arg.off = f->off_;
-    f->off_ += sz;
-  }
+  arg.off = f->off_;
+  f->off_ += sz;
   // !!! EOF handling, off overflow?
   arg.buf = buf;
   arg.sz = sz;
+  // Lock handoff
+  // auto vn_irqs = f->vnode_->refcount_lock.lock();
+  spinlock_guard guard(f->vnode_->refcount_lock);
+  f->file_lock.unlock(irqs);
   return f->vnode_->ops->vop_write(f->vnode_, &arg);
 }
 
@@ -93,12 +98,13 @@ int pipe_fops::fo_decref(file* f) const {
     spinlock_guard guard(f->pipe_->lock_);
     if (f->type == FREAD) {
       f->pipe_->read_closed_ = true;
+      f->pipe_->nonfull_.notify_all();
     } else {
       assert(f->type == FWRITE);
       f->pipe_->write_closed_ = true;
+      f->pipe_->nonempty_.notify_all();      
     }
     f->type = FTYPE_NONE;
-    // f->pipe_->wq_.notify_all();
     if (f->pipe_->read_closed_ && f->pipe_->write_closed_) {
       // ??? let go of the lock temporarily to let any blocked processes respond
       //     before blowing up the pipe (does this work? is this needed?)
@@ -110,7 +116,12 @@ int pipe_fops::fo_decref(file* f) const {
   return f->refcount_; 
 }
 
-int pipe_fops::fo_read(file* f, char* buf, size_t sz) const {
+int pipe_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
+  assert(!file_table_lock.is_locked());
+  assert(f->file_lock.is_locked());
+  // Lock handoff
+  spinlock_guard guard(f->pipe_->lock_);
+  f->file_lock.unlock(irqs);
   if (f->flags == FWRITE) {
     assert(f->flags == FWRITE);
     log_printf("trying to read from write end\n");
@@ -119,16 +130,41 @@ int pipe_fops::fo_read(file* f, char* buf, size_t sz) const {
   if (f->pipe_->write_closed_ && f->pipe_->is_empty()) {
     return 0; // EOF
   }
+  // blocking logic is here since I don't know how to perform lock handoff otherwise
+  waiter w;
+  w.wait_until(f->pipe_->nonempty_, [&] () {
+    return (f->pipe_->blen_ > 0 || f->pipe_->write_closed_);
+  }, guard);
+  if (f->pipe_->write_closed_) {
+    return 0;
+  }
   return f->pipe_->read(buf, sz);
 }
 
-int pipe_fops::fo_write(file* f, char* buf, size_t sz) const {
+int pipe_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
+  assert(!file_table_lock.is_locked());
+  assert(f->file_lock.is_locked());
+  // Lock handoff
+  spinlock_guard guard(f->pipe_->lock_);
+  f->file_lock.unlock(irqs);
   if (f->flags == FREAD) {
     assert(f->flags == FREAD);
     return E_BADF;
   }
   if (f->pipe_->read_closed_) {
     return E_PIPE;
+  }  
+  // blocking logic is here since I don't know how to perform lock handoff otherwise
+  waiter w;
+  w.wait_until(f->pipe_->nonfull_, [&] () {
+    return (f->pipe_->blen_ < f->pipe_->bcapacity || f->pipe_->read_closed_);
+  }, guard);
+  if (!f->pipe_->read_closed_) {
+    // I think 0 is appropriate rather than E_BADF because
+    // if we got past the initial check in the caller, the read
+    // end got closed after we tried to start writing, which isn't
+    // the caller's fault
+    return 0;
   }
   return f->pipe_->write(buf, sz);
 }
@@ -210,14 +246,12 @@ int file_decref(file* f) {
   // return f->ops->fo_decref(f);
 }
 
-int file_read(file* f, char* buf, size_t sz) {
-  // spinlock_guard guard(f->file_lock);
-  return f->ops->fo_read(f, buf, sz);  
+int file_read(file* f, char* buf, size_t sz, irqstate &irqs) {
+  return f->ops->fo_read(f, buf, sz, irqs);  
 }
 
-int file_write(file* f, char* buf, size_t sz) {
-  // spinlock_guard guard(f->file_lock);
-  return f->ops->fo_write(f, buf, sz);  
+int file_write(file* f, char* buf, size_t sz, irqstate &irqs) {
+  return f->ops->fo_write(f, buf, sz, irqs);  
 }
 
 int vnode_incref(vnode* vn) {

@@ -844,22 +844,22 @@ uintptr_t proc::syscall_read(regstate* regs) {
     return E_FAULT;
   }
 
-  spinlock_guard guard(fd_table_lock);  
-  // Check that fd is valid
-  log_printf("trying to read from fd %i...\n", fd);
-  if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
-    log_printf("nope\n", fd);
-    return E_BADF;
-  }
-  log_printf("it's aight\n", fd);
-  log_printf("points to file %i\n", fd_table[fd]);
-  
   file* f;
-  spinlock_guard guard_file(file_table_lock);
-  f = &(file_table[fd_table[fd]]);
-  assert(f->type != FTYPE_NONE);
-  // ??? !!! To set a file to none, a thread must obtain both the file_table_lock and the file_lock, in that order
-  return file_read(f, reinterpret_cast<char*>(addr), sz);
+  irqstate irqs;  
+  {
+    spinlock_guard guard(fd_table_lock);  
+    // Check that fd is valid
+    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+      return E_BADF;
+    }
+  
+    spinlock_guard guard_file(file_table_lock);
+    f = &(file_table[fd_table[fd]]);
+    assert(f->type != FTYPE_NONE);
+    irqs = f->file_lock.lock();
+    // file_read MUST unlock file_lock, using irqs (this might be very sketchy)
+  }
+  return file_read(f, reinterpret_cast<char*>(addr), sz, irqs);
 }
 
 uintptr_t proc::syscall_write(regstate* regs) {
@@ -885,19 +885,23 @@ uintptr_t proc::syscall_write(regstate* regs) {
   if (!(it.range_perm(sz) & (PTE_P | PTE_U))) {
     return E_FAULT;
   }
-  
-  spinlock_guard guard(fd_table_lock);
-  // Check that fd is valid
-  if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
-    return E_BADF;
-  }
-  
+
   file* f;
-  spinlock_guard guard_file(file_table_lock);
-  f = &(file_table[fd_table[fd]]);
-  assert(f->type != FTYPE_NONE);
-  // ??? !!! To set a file to none, a thread must obtain both the file_table_lock and the file_lock, in that order
-  return file_write(f, reinterpret_cast<char*>(addr), sz);
+  irqstate irqs;
+  {
+    spinlock_guard guard(fd_table_lock);
+    // Check that fd is valid
+    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+      return E_BADF;
+    }
+  
+    spinlock_guard guard_file(file_table_lock);
+    f = &(file_table[fd_table[fd]]);
+    assert(f->type != FTYPE_NONE);
+    irqs = f->file_lock.lock(); // lock handoff
+    // file_write MUST unlock file_lock, using irqs (this might be very sketchy)
+  }
+  return file_write(f, reinterpret_cast<char*>(addr), sz, irqs);
 }
 
 uintptr_t proc::syscall_readdiskfile(regstate* regs) {

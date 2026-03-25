@@ -56,7 +56,8 @@ struct bbuffer {
   bool write_closed_ = false;
   bool read_closed_ = false;
   spinlock lock_;
-  wait_queue wq_;
+  wait_queue nonfull_;
+  wait_queue nonempty_;
 
   ssize_t read(char* buf, size_t sz);
   ssize_t write(const char* buf, size_t sz);
@@ -75,8 +76,8 @@ struct file_ops {
     return ++f->refcount_;
   };
   virtual int fo_decref(file* f) const = 0;
-  virtual int fo_read(file* f, char* buf, size_t sz) const = 0;
-  virtual int fo_write(file* f, char* buf, size_t sz) const = 0;
+  virtual int fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const = 0;
+  virtual int fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const = 0;
 };
 
 struct vnode_ops {
@@ -94,14 +95,14 @@ extern spinlock file_table_lock;
 
 struct vnode_fops : public file_ops { // i.e. as opposed to pipe_fops
   int fo_decref(file* f) const override;
-  int fo_read(file* f, char* buf, size_t sz) const override;
-  int fo_write(file* f, char* buf, size_t sz) const override;
+  int fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const override;
+  int fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const override;
 };
 
 struct pipe_fops : public file_ops {
   int fo_decref(file* f) const override;
-  int fo_read(file* f, char* buf, size_t sz) const override;
-  int fo_write(file* f, char* buf, size_t sz) const override;
+  int fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const override;
+  int fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const override;
 };
 
 struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
@@ -116,8 +117,8 @@ extern kcfs_vops kc_vops;
 
 int file_incref(file* f);
 int file_decref(file* f);
-int file_read(file* f, char* buf, size_t sz);
-int file_write(file* f, char* buf, size_t sz);
+int file_read(file* f, char* buf, size_t sz, irqstate &irqs);
+int file_write(file* f, char* buf, size_t sz, irqstate &irqs);
 
 int vnode_incref(vnode* vn);
 int vnode_decref(vnode* vn);
