@@ -70,10 +70,9 @@ int vnode_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
   arg.buf = buf;
   arg.sz = sz;
   // Lock handoff
-  // auto vn_irqs = f->vnode_->refcount_lock.lock();
-  spinlock_guard guard(f->vnode_->refcount_lock);
+  auto vn_irqs = f->vnode_->refcount_lock.lock();
   f->file_lock.unlock(irqs);
-  return f->vnode_->ops->vop_read(f->vnode_, &arg);
+  return f->vnode_->ops->vop_read(f->vnode_, &arg, vn_irqs);
 }
 
 int vnode_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
@@ -86,10 +85,9 @@ int vnode_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
   arg.buf = buf;
   arg.sz = sz;
   // Lock handoff
-  // auto vn_irqs = f->vnode_->refcount_lock.lock();
-  spinlock_guard guard(f->vnode_->refcount_lock);
+  auto vn_irqs = f->vnode_->refcount_lock.lock();
   f->file_lock.unlock(irqs);
-  return f->vnode_->ops->vop_write(f->vnode_, &arg);
+  return f->vnode_->ops->vop_write(f->vnode_, &arg, vn_irqs);
 }
 
 int pipe_fops::fo_decref(file* f) const {
@@ -174,9 +172,11 @@ int kcfs_vops::vop_decref(vnode* vn) const {
   return --vn->refcount; // caller should then free this vnode
 }
 
-int kcfs_vops::vop_read(vnode* vn, uio* uio) const {
+int kcfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   auto& kbd = keyboardstate::get();
+  // Lock handoff
   spinlock_guard guard(kbd.lock_);
+  vn->refcount_lock.unlock(irqs);
   uintptr_t addr = reinterpret_cast<uintptr_t>(uio->buf); // ??? ignore offset for kcfs_vops? should this be reflected in file offset not increasing?
     
   // mark that we are now reading from the keyboard
@@ -212,10 +212,12 @@ int kcfs_vops::vop_read(vnode* vn, uio* uio) const {
   return n;
 }
   
-int kcfs_vops::vop_write(vnode* vn, uio* uio) const {
+int kcfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   uintptr_t addr = reinterpret_cast<uintptr_t>(uio->buf);
   auto& csl = consolestate::get();
+  // Lock handoff
   spinlock_guard guard(csl.lock_);
+  vn->refcount_lock.unlock(irqs);  
   size_t n = 0;
   while (n < uio->sz) {
     int ch = *reinterpret_cast<const char*>(addr);

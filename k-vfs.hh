@@ -86,8 +86,8 @@ struct vnode_ops {
     return ++vn->refcount;
   };
   virtual int vop_decref(vnode* vn) const = 0;
-  virtual int vop_read(vnode* vn, uio* uio) const = 0;
-  virtual int vop_write(vnode* vn, uio* uio) const = 0;
+  virtual int vop_read(vnode* vn, uio* uio, irqstate &irqs) const = 0;
+  virtual int vop_write(vnode* vn, uio* uio, irqstate &irqs) const = 0;
 };
 
 extern file file_table[N_FILE];
@@ -107,8 +107,8 @@ struct pipe_fops : public file_ops {
 
 struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
   int vop_decref(vnode* vn) const override;
-  int vop_read(vnode* vn, uio* uio) const override;  
-  int vop_write(vnode* vn, uio* uio) const override;
+  int vop_read(vnode* vn, uio* uio, irqstate &irqs) const override;  
+  int vop_write(vnode* vn, uio* uio, irqstate &irqs) const override;
 };
 
 extern vnode_fops vn_fops;
