@@ -857,6 +857,7 @@ uintptr_t proc::syscall_read(regstate* regs) {
     f = &(file_table[fd_table[fd]]);
     assert(f->type != FTYPE_NONE);
     irqs = f->file_lock.lock();
+    assert(f->type != FTYPE_NONE);
     // file_read MUST unlock file_lock, using irqs (this might be very sketchy)
   }
   return file_read(f, reinterpret_cast<char*>(addr), sz, irqs);
@@ -886,6 +887,7 @@ uintptr_t proc::syscall_write(regstate* regs) {
     return E_FAULT;
   }
 
+  cli(); // !!! not sure how to avoid scheduling while spinlocked without doing this
   file* f;
   irqstate irqs;
   {
@@ -899,6 +901,7 @@ uintptr_t proc::syscall_write(regstate* regs) {
     f = &(file_table[fd_table[fd]]);
     assert(f->type != FTYPE_NONE);
     irqs = f->file_lock.lock(); // lock handoff
+    assert(f->type != FTYPE_NONE);
     // file_write MUST unlock file_lock, using irqs (this might be very sketchy)
   }
   return file_write(f, reinterpret_cast<char*>(addr), sz, irqs);

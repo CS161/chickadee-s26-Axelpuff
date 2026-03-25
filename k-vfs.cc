@@ -21,7 +21,9 @@ ssize_t bbuffer::write(const char* buf, size_t sz) {
   if (pos == 0 && sz > 0) {
     return -1; // ??? what should this be, if anything
   } else {
+    log_printf("doing a notify for readers\n");
     this->nonempty_.notify_all();
+    log_printf("done notifying\n");
     return pos;
   }
 }
@@ -42,7 +44,9 @@ ssize_t bbuffer::read(char* buf, size_t sz) {
   if (pos == 0 && sz > 0 && !this->write_closed_) {
     return -1;  // ??? what should this be, if anything
   } else {
+    log_printf("doing a notify for writers\n");
     this->nonfull_.notify_all();      
+    log_printf("done notifying\n");
     return pos;
   }
 }
@@ -93,16 +97,18 @@ int vnode_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
 int pipe_fops::fo_decref(file* f) const {
   assert(f->refcount_ > 0);
   if (--f->refcount_ == 0) {
-    spinlock_guard guard(f->pipe_->lock_);
-    if (f->type == FREAD) {
+  spinlock_guard guard(f->pipe_->lock_);
+    f->type = FTYPE_NONE;
+    if (f->flags == FREAD) {
       f->pipe_->read_closed_ = true;
+      log_printf("Closed a read end\n");
       f->pipe_->nonfull_.notify_all();
     } else {
-      assert(f->type == FWRITE);
+      assert(f->flags == FWRITE);
       f->pipe_->write_closed_ = true;
+      log_printf("Closed a write end\n");
       f->pipe_->nonempty_.notify_all();      
     }
-    f->type = FTYPE_NONE;
     if (f->pipe_->read_closed_ && f->pipe_->write_closed_) {
       // ??? let go of the lock temporarily to let any blocked processes respond
       //     before blowing up the pipe (does this work? is this needed?)
@@ -115,14 +121,13 @@ int pipe_fops::fo_decref(file* f) const {
 }
 
 int pipe_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
-  assert(!file_table_lock.is_locked());
+  // assert(!file_table_lock.is_locked());
   assert(f->file_lock.is_locked());
   // Lock handoff
   spinlock_guard guard(f->pipe_->lock_);
   f->file_lock.unlock(irqs);
   if (f->flags == FWRITE) {
     assert(f->flags == FWRITE);
-    log_printf("trying to read from write end\n");
     return E_BADF;
   }
   if (f->pipe_->write_closed_ && f->pipe_->is_empty()) {
@@ -140,7 +145,7 @@ int pipe_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
 }
 
 int pipe_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
-  assert(!file_table_lock.is_locked());
+  // assert(!file_table_lock.is_locked());
   assert(f->file_lock.is_locked());
   // Lock handoff
   spinlock_guard guard(f->pipe_->lock_);
@@ -154,10 +159,12 @@ int pipe_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
   }  
   // blocking logic is here since I don't know how to perform lock handoff otherwise
   waiter w;
+  log_printf("might schedule...\n");
   w.wait_until(f->pipe_->nonfull_, [&] () {
     return (f->pipe_->blen_ < f->pipe_->bcapacity || f->pipe_->read_closed_);
   }, guard);
-  if (!f->pipe_->read_closed_) {
+  log_printf("we're back\n");
+  if (f->pipe_->read_closed_) {
     // I think 0 is appropriate rather than E_BADF because
     // if we got past the initial check in the caller, the read
     // end got closed after we tried to start writing, which isn't
