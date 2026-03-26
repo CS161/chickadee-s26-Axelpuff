@@ -79,6 +79,7 @@ struct memfile {
     unsigned char* data_;                // file data (nullptr if empty)
     size_t len_;                         // length of file data
     size_t capacity_;                    // # bytes available in `data_`
+    spinlock lock_;                      // For memfile access synchronization during runtime
 
     inline memfile();
     inline memfile(const char* name, unsigned char* first,
@@ -94,6 +95,7 @@ struct memfile {
     // memfile::initfs[] is the initial file system built in to the kernel
     static constexpr unsigned initfs_size = 64;
     static memfile initfs[initfs_size];
+    static spinlock initfs_lock;
 
     // Return the index in `initfs` of the memfile named `name`.
     // When the named memfile is not found, the behavior depends on `flag`:

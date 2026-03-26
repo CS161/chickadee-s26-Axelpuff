@@ -277,6 +277,34 @@ int close_fd(int fd, unsigned int* fd_table) {
   return 0;
 }
 
+bool valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t addr, size_t sz, int flags) {
+  if (VA_LOWEND - sz < addr) {
+    return 0;
+  }
+  vmiter it(pagetable, addr);
+  if (!(it.range_perm(sz) & flags)) {
+    return 0;
+  }
+  return 1;
+}
+
+const unsigned int max_pathname_len = 100;
+// validate a null-terminated string
+bool valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t start_addr, int flags) {
+  uintptr_t addr = start_addr;
+  while (addr - start_addr < max_pathname_len && addr < VA_LOWEND) {
+    vmiter it(pagetable, addr);
+    if (!(it.perm() & flags)) {
+      return 0;
+    }
+    if (*reinterpret_cast<char *>(addr) == '\0') {
+      return addr > start_addr; // assuming a filename needs to be at least one character long
+    }
+    addr++;
+  }
+  return 0;
+}
+
 // proc::syscall(regs)
 //    System call handler.
 //
@@ -525,6 +553,55 @@ uintptr_t proc::syscall(regstate* regs) {
     file_incref(&file_table[fd_table[newfd]]);
     return newfd;
   }
+
+  case SYSCALL_OPEN: {
+    uintptr_t addr = regs->reg_rdi;
+    int flags = regs->reg_rsi;
+    if (!valid_user_buffer(pagetable_, addr, PTE_P | PTE_U)) {
+      return E_FAULT;
+    }
+    const char* pathname = reinterpret_cast<const char*>(addr);
+    
+    // Find fd
+    int fd = -1;
+    spinlock_guard guard(fd_table_lock);
+    for (int i = 0; i < N_FILEDESC; i++) {
+      if (fd_table[i] == FD_EMPTY) {
+	fd = i;
+	break;
+      }
+    }
+    if (fd == -1) {
+      return E_MFILE;
+    }
+
+    // find free file table entry
+    int fileid = -1;
+    spinlock_guard guard_file(file_table_lock);
+    for (int i = 0; i < N_FILE; i++) {
+      if (file_table[i].type == FTYPE_NONE) {
+	fileid = i;
+	break;
+      }
+    }
+    if (fileid == -1) {
+      return E_NFILE;
+    }
+
+    // implement this, have it check for OF_READ and OF_WRITE in flags
+    // requires new vnode ops for memfile that keeps track of file length?
+    // writing beyond end of file should extend file's length (using memfile::set_length);
+    int err = init_memfile_entry(&file_table[fileid], pathname, flags);
+    if (err < 0) {
+      return err;
+    }
+    // !!! todo: abstract this into a functino since I keep forgetting to do incref
+    fd_table[fd] = fileid;
+    file_incref(&file_table[fileid]);
+    return fd;
+  }
+    
+    
 
   case SYSCALL_MSLEEP: {
     // round up to nearest 0.01 seconds
@@ -834,11 +911,7 @@ uintptr_t proc::syscall_read(regstate* regs) {
   }
 
   // Validate the read buffer.
-  if (VA_LOWEND - sz < addr) {
-    return E_FAULT;
-  }
-  vmiter it(this, addr);
-  if (!(it.range_perm(sz) & (PTE_P | PTE_W | PTE_U))) {
+  if (!valid_user_buffer(pagetable_, addr, sz, PTE_P | PTE_W | PTE_U)) {
     return E_FAULT;
   }
   
@@ -853,9 +926,11 @@ uintptr_t proc::syscall_read(regstate* regs) {
   
     spinlock_guard guard_file(file_table_lock);
     f = &(file_table[fd_table[fd]]);
-    assert(f->type != FTYPE_NONE);
     irqs = f->file_lock.lock();
-    assert(f->type != FTYPE_NONE);
+    if (f->type == FTYPE_NONE) {
+      f->file_lock.unlock(irqs);
+      return E_BADF;
+    }
     // file_read() MUST unlock file_lock once it has obtained its next lock
   }
   // even though file_lock.lock() (with irq), we need to manually disable interrupts
@@ -880,12 +955,9 @@ uintptr_t proc::syscall_write(regstate* regs) {
   if (sz == 0 && addr < VA_LOWEND) {
     return 0;
   }
-  
-  if (VA_LOWEND - sz < addr) {
-    return E_FAULT;
-  }
-  vmiter it(this, addr);
-  if (!(it.range_perm(sz) & (PTE_P | PTE_U))) {
+
+  // Validate write buffer
+  if (!valid_user_buffer(pagetable_, addr, sz, PTE_P | PTE_U)) {
     return E_FAULT;
   }
 
@@ -900,10 +972,12 @@ uintptr_t proc::syscall_write(regstate* regs) {
   
     spinlock_guard guard_file(file_table_lock);
     f = &(file_table[fd_table[fd]]);
-    assert(f->type != FTYPE_NONE);
-    irqs = f->file_lock.lock(); // lock handoff
-    assert(f->type != FTYPE_NONE);
-    // file_write MUST unlock file_lock, using irqs (this might be very sketchy)
+    irqs = f->file_lock.lock();
+    if (f->type == FTYPE_NONE) {
+      f->file_lock.unlock(irqs);
+      return E_BADF;
+    }
+    // handoff: file_write MUST unlock file_lock, using irqs (this might be very sketchy)
   }
   cli(); // !!! not sure how to avoid scheduling while spinlocked without doing this
   return file_write(f, reinterpret_cast<char*>(addr), sz, irqs);

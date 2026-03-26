@@ -43,6 +43,8 @@ struct vnode {
   int refcount;
   spinlock refcount_lock;
 
+  int mindex = -1;
+  
   const vnode_ops* ops;
   vnode(vnode_ops* vn_ops): ops(vn_ops) {
   }
@@ -111,9 +113,16 @@ struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
   int vop_write(vnode* vn, uio* uio, irqstate &irqs) const override;
 };
 
+struct memf_vops : public vnode_ops { // memfile
+  int vop_decref(vnode* vn) const override;
+  int vop_read(vnode* vn, uio* uio, irqstate &irqs) const override;  
+  int vop_write(vnode* vn, uio* uio, irqstate &irqs) const override;
+};
+
 extern vnode_fops vn_fops;
 extern pipe_fops p_fops;
 extern kcfs_vops kc_vops;
+extern memf_vops mf_vops;
 
 int file_incref(file* f);
 int file_decref(file* f);
@@ -125,3 +134,4 @@ int vnode_decref(vnode* vn);
 
 void init_kc_file(file* kc_file);
 void init_pipe_files(file* read_file, file* write_file);
+int init_memfile_entry(file* file_slot, const char* pathname, int flags);

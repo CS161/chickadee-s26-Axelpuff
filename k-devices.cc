@@ -248,6 +248,8 @@ void consolestate::cursor(bool show) {
 
 // memfile functions
 
+spinlock memfile::initfs_lock;
+
 // memfile::initfs_lookup(name, flag)
 //    Search `memfile::initfs` for a file named `name`. Return the
 //    index of that `memfile` if found; this will be >= 0 and <

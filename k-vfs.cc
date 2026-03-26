@@ -240,12 +240,61 @@ int kcfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   return n;
 }
 
+int memf_vops::vop_decref(vnode* vn) const { // may be worth inlining if all vop_decrefs look like this
+  assert(vn->refcount > 0);
+  return --vn->refcount; // caller should then free this vnode
+}
+
+int memf_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
+  // lock
+  auto init_irqs = memfile::initfs_lock.lock();
+  // find memfile
+  assert(vn->mindex >= 0);
+  memfile* m = &(memfile::initfs[vn->mindex]);
+  // get memfile lock
+  spinlock_guard guard(m->lock_);
+  // let go of initfs lock (and vnode lock. (unrelated?) I think the caller actually should keep the file lock in order to update file `off` with the return value, see "oof!!!" note below)
+  memfile::initfs_lock.unlock(init_irqs);
+  vn->refcount_lock.unlock(irqs);
+  // read from relevant location in file (return 0 if past end, also log printf/assert that)
+  if (static_cast<size_t>(uio->off) >= m->len_) {
+    return 0;
+  }
+  uintptr_t start_copy = reinterpret_cast<uintptr_t>(m->data_) + uio->off;
+  size_t read_sz = min(m->len_ - static_cast<size_t>(uio->off), uio->sz);
+  memcpy(uio->buf, reinterpret_cast<char *>(start_copy), read_sz);
+  // return amount read (oof!!! this will not get reflected in the file struct rn)
+  return read_sz;
+}
+  
+int memf_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
+  // lock
+  auto init_irqs = memfile::initfs_lock.lock();
+  // find memfile
+  assert(vn->mindex >= 0);
+  memfile* m = &(memfile::initfs[vn->mindex]);
+  // get memfile lock
+  spinlock_guard guard(m->lock_);
+  // let go of initfs lock and vnode lock
+  memfile::initfs_lock.unlock(init_irqs);
+  vn->refcount_lock.unlock(irqs);
+  // write to relevant location in file (return 0 if beyond capacity, also...)
+  if (static_cast<size_t>(uio->off) >= m->capacity_) {
+    return 0;
+  }
+  uintptr_t start_copy = reinterpret_cast<uintptr_t>(m->data_) + uio->off;
+  size_t write_sz = min(m->capacity_ - static_cast<size_t>(uio->off), uio->sz); 
+  memcpy(reinterpret_cast<char *>(start_copy), uio->buf, write_sz);
+  return write_sz;
+}
+
 file file_table[N_FILE];
 spinlock file_table_lock;
 
 vnode_fops vn_fops;
 pipe_fops p_fops;
 kcfs_vops kc_vops;
+memf_vops mf_vops;
 
 int file_incref(file* f) {
   spinlock_guard guard(f->file_lock);
@@ -292,7 +341,9 @@ void init_kc_file(file* kc_file) {
     kc_file->ops = &vn_fops;
   }
 }
+
 // initialize the two given files as pipe read and write ends
+// caller should possess file_table_lock (?)
 void init_pipe_files(file* read_file, file* write_file) {
   bbuffer* pipe = knew<bbuffer>();
   {
@@ -311,4 +362,44 @@ void init_pipe_files(file* read_file, file* write_file) {
     write_file->pipe_ = pipe;
     write_file->ops = &p_fops;
   }
+}
+
+// caller should possess file_table_lock
+int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
+  // !!! tentative: acquisition order is `... file -> (vnode ->) initfs -> specific memfile`
+  // exception is here, where vnode comes last, because it doesn't make sense to allocate and
+  // deallocate it (also nothing will contend for it)
+  spinlock_guard guard_file(file_slot->file_lock);
+
+  // Find memfile, or return error
+  int mindex;
+  spinlock_guard guard_i(memfile::initfs_lock);
+  mindex = memfile::initfs_lookup(pathname, (flags & OF_CREATE)
+				  ? memfile::create : memfile::optional);
+  if (mindex < 0) { // error
+    return mindex;
+  }
+    
+  memfile* m = &(memfile::initfs[mindex]);
+  spinlock_guard guard_memfile(m->lock_);
+  if (flags & OF_TRUNC) {
+    m->set_length(0);
+  }
+
+  // Make vnode
+  vnode* mfvn = knew<vnode>(&mf_vops);
+  int file_flags = ((flags | OF_READ) ? FREAD : 0) | ((flags | OF_WRITE) ? FWRITE : 0);
+  {
+    spinlock_guard guard(mfvn->refcount_lock);
+    mfvn->refcount = 1;
+    mfvn->mindex = mindex;
+  }
+  
+  file_slot->type = FTYPE_VNODE;
+  file_slot->refcount_ = 0; 
+  file_slot->flags = file_flags;
+  file_slot->off_ = 0;
+  file_slot->vnode_ = mfvn;
+  file_slot->ops = &vn_fops;
+  return 0;
 }
