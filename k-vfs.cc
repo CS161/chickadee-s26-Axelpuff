@@ -41,9 +41,10 @@ ssize_t bbuffer::read(char* buf, size_t sz) {
     pos += n;
   }
   if (pos == 0 && sz > 0 && !this->write_closed_) {
-    return -1;  // ??? what should this be, if anything
+    log_printf("L\n");    return -1;  // ??? what should this be, if anything
   } else {
-    this->nonfull_.notify_all();      
+    this->nonfull_.notify_all();
+    log_printf("I am successfully reading from a pipe\n");
     return pos;
   }
 }
@@ -62,6 +63,7 @@ int vnode_fops::fo_decref(file* f) const {
 }
 
 const off_t max_off = std::numeric_limits<off_t>::max();
+const off_t max_sz = std::numeric_limits<size_t>::max();
 
 int vnode_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
   assert(f->file_lock.is_locked());
@@ -114,6 +116,7 @@ int pipe_fops::fo_decref(file* f) const {
     } else {
       assert(f->flags == FWRITE);
       f->pipe_->write_closed_ = true;
+      log_printf("TERMINATED\n");
       f->pipe_->nonempty_.notify_all();      
     }
     if (f->pipe_->read_closed_ && f->pipe_->write_closed_) {
@@ -142,10 +145,12 @@ int pipe_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
   }
   // blocking logic is here since I don't know how to perform lock handoff otherwise
   waiter w;
+  log_printf("Reader might block\n");
   w.wait_until(f->pipe_->nonempty_, [&] () {
     return (f->pipe_->blen_ > 0 || f->pipe_->write_closed_);
   }, guard);
-  if (f->pipe_->write_closed_) {
+  if (f->pipe_->write_closed_ && f->pipe_->is_empty()) {
+    log_printf("Never got to try to read\n");
     return 0;
   }
   return f->pipe_->read(buf, sz);
@@ -166,6 +171,7 @@ int pipe_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
   }  
   // blocking logic is here since I don't know how to perform lock handoff otherwise
   waiter w;
+  log_printf("Writer might block\n");
   w.wait_until(f->pipe_->nonfull_, [&] () {
     return (f->pipe_->blen_ < f->pipe_->bcapacity || f->pipe_->read_closed_);
   }, guard);
@@ -246,6 +252,8 @@ int memf_vops::vop_decref(vnode* vn) const { // may be worth inlining if all vop
 }
 
 int memf_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
+  log_printf("I'm getting a read of size %zu\n", uio->sz);
+  log_printf("Offset is %lu\n", uio->off);
   // lock
   auto init_irqs = memfile::initfs_lock.lock();
   // find memfile
@@ -253,6 +261,7 @@ int memf_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   memfile* m = &(memfile::initfs[vn->mindex]);
   // get memfile lock
   spinlock_guard guard(m->lock_);
+  log_printf("File len is %lu\n", m->len_);
   // let go of initfs lock (and vnode lock. (unrelated?) I think the caller actually should keep the file lock in order to update file `off` with the return value, see "oof!!!" note below)
   memfile::initfs_lock.unlock(init_irqs);
   vn->refcount_lock.unlock(irqs);
@@ -264,10 +273,12 @@ int memf_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   size_t read_sz = min(m->len_ - static_cast<size_t>(uio->off), uio->sz);
   memcpy(uio->buf, reinterpret_cast<char *>(start_copy), read_sz);
   // return amount read (oof!!! this will not get reflected in the file struct rn)
+  log_printf("Returned size: %zu\n", read_sz);
   return read_sz;
 }
   
 int memf_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
+  log_printf("I'm getting a write of size %zu\n", uio->sz);
   // lock
   auto init_irqs = memfile::initfs_lock.lock();
   // find memfile
@@ -278,15 +289,22 @@ int memf_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   // let go of initfs lock and vnode lock
   memfile::initfs_lock.unlock(init_irqs);
   vn->refcount_lock.unlock(irqs);
-  // write to relevant location in file (return 0 if beyond capacity, also...)
-  if (static_cast<size_t>(uio->off) >= m->capacity_) {
-    return 0;
+  if (max_sz - uio->sz < static_cast<size_t>(uio->off)) {
+  log_printf("Capacity is  %zu\n", m->capacity_);
+    return E_NOSPC;
   }
+  // expand file if needed
+  size_t needed_file_sz = uio->sz + static_cast<size_t>(uio->off);
+  if (needed_file_sz > m->capacity_) {
+    int s = m->set_length(needed_file_sz);
+    if (s < 0) {
+      return s;
+    }
+  }
+  // write to relevant location in file
   uintptr_t start_copy = reinterpret_cast<uintptr_t>(m->data_) + uio->off;
-  size_t write_sz = min(m->capacity_ - static_cast<size_t>(uio->off), uio->sz); 
-    m->set_length(start_copy + write_sz);
-    memcpy(reinterpret_cast<char *>(start_copy), uio->buf, write_sz);
-  return write_sz;
+  memcpy(reinterpret_cast<char *>(start_copy), uio->buf, uio->sz);
+  return uio->sz;
 }
 
 file file_table[N_FILE];

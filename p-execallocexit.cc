@@ -9,6 +9,8 @@ void process_main() {
     const char* args[] = {
         "allocexit", nullptr
     };
+    console_printf("addr from perspective 1: %zu\n", args[0]);
+
     int r = sys_execv("allocexit", args);
     assert_eq(r, 0);
 

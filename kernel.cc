@@ -277,32 +277,36 @@ int close_fd(int fd, unsigned int* fd_table) {
   return 0;
 }
 
-bool valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t addr, size_t sz, int flags) {
+// returns either sz or -1
+int valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t addr, size_t sz, int flags) {
   if (VA_LOWEND - sz < addr) {
-    return 0;
+    return -1;
   }
   vmiter it(pagetable, addr);
   if (!(it.range_perm(sz) & flags)) {
-    return 0;
+    return -1;
   }
-  return 1;
+  return sz;
 }
 
-const unsigned int max_pathname_len = 100;
+const unsigned int max_pathname_len = 0xFFFF; // arbitrary
 // validate a null-terminated string
-bool valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t start_addr, int flags) {
+// returns string length (WITHOUT the null terminator), or -1 
+int valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t start_addr, int flags) {
   uintptr_t addr = start_addr;
+  // log_printf("addr from perspective 2: %zu\n", addr);
   while (addr - start_addr < max_pathname_len && addr < VA_LOWEND) {
+     // log_printf("difference is now %zu...\n", addr - start_addr);
     vmiter it(pagetable, addr);
     if (!(it.perm() & flags)) {
-      return 0;
+      return -1;
     }
     if (*reinterpret_cast<char *>(addr) == '\0') {
-      return addr > start_addr; // assuming a filename needs to be at least one character long
+      return addr - start_addr;
     }
     addr++;
   }
-  return 0;
+  return -1;
 }
 
 // proc::syscall(regs)
@@ -557,7 +561,8 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_OPEN: {
     uintptr_t addr = regs->reg_rdi;
     int flags = regs->reg_rsi;
-    if (!valid_user_buffer(pagetable_, addr, PTE_P | PTE_U)) {
+    // assume a filename needs to be at least one character long
+    if (valid_user_buffer(pagetable_, addr, PTE_P | PTE_U) <= 0) {
       return E_FAULT;
     }
     const char* pathname = reinterpret_cast<const char*>(addr);
@@ -588,9 +593,6 @@ uintptr_t proc::syscall(regstate* regs) {
       return E_NFILE;
     }
 
-    // implement this, have it check for OF_READ and OF_WRITE in flags
-    // requires new vnode ops for memfile that keeps track of file length?
-    // writing beyond end of file should extend file's length (using memfile::set_length);
     int err = init_memfile_entry(&file_table[fileid], pathname, flags);
     if (err < 0) {
       return err;
@@ -601,7 +603,118 @@ uintptr_t proc::syscall(regstate* regs) {
     return fd;
   }
     
+  case SYSCALL_EXECV: {
+    uintptr_t pathname_addr = regs->reg_rdi;
+    uintptr_t argv_addr = regs->reg_rsi;
+    int argc = regs->reg_rdx;
     
+    // validate pathname
+    if (valid_user_buffer(pagetable_, pathname_addr, PTE_P | PTE_U) <= 0) {
+      return E_FAULT;
+    }
+    const char* pathname = reinterpret_cast<const char*>(pathname_addr);
+    
+    // validate argv
+    size_t argv_sz = argc * sizeof(const char*);
+    if (valid_user_buffer(pagetable_, argv_addr, argv_sz, PTE_P | PTE_U) == -1) {
+	log_printf("argv not valid\n");
+	return E_FAULT;
+    }
+    const char* const* argv = reinterpret_cast<const char* const*>(argv_addr);
+    size_t argv_char_lens[argc]; // COUNTING NULL TERMINATORS
+    size_t argv_total_chars = 0; // COUNTING NULL TERMINATORS
+    for (int i = 0; i < argc; i++) {
+      uintptr_t addr = reinterpret_cast<uintptr_t>(argv[i]);
+      int len = valid_user_buffer(pagetable_, addr, PTE_P | PTE_U);
+      // log_printf("on argument %i\n", i);
+      assert(len != 0); // not sure if this can/should happen
+      if (len <= 0) { // should this be < ?
+	log_printf("argv entry %i not valid\n", i);
+	return E_FAULT;
+      }
+      argv_char_lens[i] = len + 1;
+      argv_total_chars += len + 1;
+    }
+    if (argv[argc] != nullptr) {
+      log_printf("argv not nullterminated\n");
+      return E_FAULT;
+    }
+    
+    // look up memfile
+    int mindex = memfile::initfs_lookup(pathname, memfile::optional);
+    if (mindex < 0) {
+      log_printf("memfile not found\n");
+      return mindex;
+    }
+    x86_64_pagetable* pt = knew_pagetable();
+    if (!pt) {
+      return E_NOMEM;
+    }
+
+    // load code and data into pagetable
+    memfile_loader ld(mindex, pt);
+    int r = proc::load(ld);
+    if (r < 0) {
+      cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
+      return r;
+    }
+
+    // allocate new stack page
+    void* stkpg = kalloc(PAGESIZE);
+    if (!stkpg) {
+      cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
+      return E_NOMEM;
+    }
+
+    // copy strings in argv into the stack page back to back, one character at a time
+    // at the same time, rebuild argv, pointing to the beginnings of the strings
+    uintptr_t pos = reinterpret_cast<uintptr_t>(stkpg) + PAGESIZE - argv_total_chars;
+    uintptr_t argv_start = ((pos - 8 * (argc + 1)) / 8) * 8;
+    assert(argv_start > reinterpret_cast<uintptr_t>(stkpg));
+    char** argv_array = reinterpret_cast<char**>(argv_start);
+    for (int i = 0; i < argc; i++) {
+      uintptr_t new_pt_pos = pos - reinterpret_cast<uintptr_t>(stkpg) + MEMSIZE_VIRTUAL - PAGESIZE;
+      argv_array[i] = reinterpret_cast<char*>(new_pt_pos);
+      memcpy(reinterpret_cast<char*>(pos), argv[i], argv_char_lens[i]);
+      pos += argv_char_lens[i];
+      assert(*reinterpret_cast<char*>(pos - 1) == '\0');
+    }
+    argv_array[argc] = nullptr;
+    
+    // argv addr in new pagetable
+    uintptr_t argv_start_new = argv_start - reinterpret_cast<uintptr_t>(stkpg) + MEMSIZE_VIRTUAL - PAGESIZE;
+    
+    // map new stack page
+    int m = vmiter(pt, MEMSIZE_VIRTUAL - PAGESIZE).try_map(stkpg, PTE_PWU);
+    if (m < 0) {
+      kfree(stkpg);
+      cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
+      return r;
+    }
+    // map console
+    m = vmiter(pt, ktext2pa(console)).try_map(console, PTE_PWU);
+    if (m < 0) { // this could be freshened up with a goto statement!
+      kfree(stkpg);
+      cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
+      return r;
+    }
+    
+    // there's no going back now...
+    // install new page table and initialize fresh registers
+    x86_64_pagetable* old_pagetable = pagetable_;
+    init_user(pt);
+    // setup rip, rsp, rdi, rsi
+    regs_->reg_rip = ld.entry_rip_;
+    regs_->reg_rsp = argv_start_new - 0x100; // -0x100 is arbitrary
+    regs_->reg_rdi = argc; // is this still in a safe place on the stack? what about other locals?
+    regs_->reg_rsi = argv_start_new;
+    // clean up old pagetable
+    cleanup_pagetable(old_pagetable, MEMSIZE_VIRTUAL);
+    // everything has faded away into white. the process turns around, looks back one last time, but there's nothing left to see; not even the stack is reachable. it's time to move on.
+    // "i'll see you on the other side..."
+    yield_noreturn();
+    break; // will not be reached
+  }
 
   case SYSCALL_MSLEEP: {
     // round up to nearest 0.01 seconds
@@ -725,10 +838,10 @@ uintptr_t proc::syscall(regstate* regs) {
 
 // simple helper functions
 
-#define OOM_ERROR -1 // idk
-#define OOP_ERROR -1 // idk
+#define E_NOPROC -67 // couldn't find an out of process error in lib.hh
 
 // CALLER MUST HOLD `ptable_lock`!!!
+// returns -1 on failure to find free pid
 int find_free_pid() {
   // avoid pid 0
   for (int pid = 1; pid != NPROC; ++pid) {
@@ -736,7 +849,7 @@ int find_free_pid() {
       return pid;
     }
   }
-  return OOM_ERROR; // is this the correct error?
+  return -1;
 }
 
 // void kfree_pagetable(x86_64_pagetable *pagetable)
@@ -795,7 +908,7 @@ int proc::syscall_fork(regstate* regs) {
   // initialize process page table
   x86_64_pagetable *child_pagetable = knew_pagetable();
   if (!child_pagetable) {
-    return OOM_ERROR;
+    return E_NOMEM;
   }
 
   // copy process code and data
@@ -811,14 +924,14 @@ int proc::syscall_fork(regstate* regs) {
                   if (!pa)
                       {
                           cleanup_pagetable(child_pagetable, addr);
-                          return OOM_ERROR;
+                          return E_NOMEM;
                       }
                   int r = vmiter(child_pagetable, it.va()).try_map(pa, it.perm());
                   if (r != 0)
                       {
                           kfree(pa);
                           cleanup_pagetable(child_pagetable, addr);
-                          return OOM_ERROR;
+                          return E_NOMEM;
                       }
                   memcpy(pa, reinterpret_cast<void *>(addr), PAGESIZE);
               }
@@ -828,7 +941,7 @@ int proc::syscall_fork(regstate* regs) {
               if (r != 0)
                   {
                       cleanup_pagetable(child_pagetable, addr);
-                      return OOM_ERROR;
+                      return E_NOMEM;
                   }
               // increment ref count (this helps preserve the read-only data when
               // one process that uses it frees)
@@ -837,21 +950,21 @@ int proc::syscall_fork(regstate* regs) {
         }
     }
   // init new ptable entry
-  int pid = -2;
+  int pid;
   proc* p;
   { 
       spinlock_guard guard_h(phierarchy_lock);
       spinlock_guard guard(ptable_lock);
       pid = find_free_pid();
-      if (pid == -1) {
+      if (pid < 0) {
           cleanup_pagetable(child_pagetable, addr);
           // log_printf("failed to find a ptable slot\n");
-          return OOP_ERROR; // technically not out of memory but similar
+          return E_NOPROC;
       }
       p = knew<proc>();
       if (!p) {
           cleanup_pagetable(child_pagetable, addr);
-          return OOM_ERROR;
+          return E_NOMEM;
       }
       p->id_ = pid;
       p->parent_id_ = this->id_;
@@ -874,8 +987,8 @@ int proc::syscall_fork(regstate* regs) {
       // log_printf("ok: %i\n", i);
     }
   }
-
-  assert(pid >= 0);
+  
+  assert(pid > 0);
   // add to run queue
   cpus[pid % ncpu].enqueue(p);
   // return child pid to parent
@@ -911,7 +1024,7 @@ uintptr_t proc::syscall_read(regstate* regs) {
   }
 
   // Validate the read buffer.
-  if (!valid_user_buffer(pagetable_, addr, sz, PTE_P | PTE_W | PTE_U)) {
+  if (valid_user_buffer(pagetable_, addr, sz, PTE_P | PTE_W | PTE_U) == -1) {
     return E_FAULT;
   }
   
@@ -957,7 +1070,7 @@ uintptr_t proc::syscall_write(regstate* regs) {
   }
 
   // Validate write buffer
-  if (!valid_user_buffer(pagetable_, addr, sz, PTE_P | PTE_U)) {
+  if (valid_user_buffer(pagetable_, addr, sz, PTE_P | PTE_U) == -1) {
     return E_FAULT;
   }
 
