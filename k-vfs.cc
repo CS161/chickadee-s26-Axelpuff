@@ -284,7 +284,8 @@ int memf_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   }
   uintptr_t start_copy = reinterpret_cast<uintptr_t>(m->data_) + uio->off;
   size_t write_sz = min(m->capacity_ - static_cast<size_t>(uio->off), uio->sz); 
-  memcpy(reinterpret_cast<char *>(start_copy), uio->buf, write_sz);
+    m->set_length(start_copy + write_sz);
+    memcpy(reinterpret_cast<char *>(start_copy), uio->buf, write_sz);
   return write_sz;
 }
 
