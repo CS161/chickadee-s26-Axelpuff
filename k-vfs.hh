@@ -26,7 +26,7 @@ struct file {
   int type;
   int refcount_;
   int flags;
-  off_t off_;
+  off_t off_; // This might be greater than the length of the file
   vnode* vnode_;
   bbuffer* pipe_;
 

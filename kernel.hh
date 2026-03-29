@@ -86,7 +86,7 @@ struct __attribute__((aligned(4096))) proc {
     inline void unblock();
 
     int syscall_fork(regstate* regs);
-    // void syscall_exit(regstate* regs);
+    [[noreturn]] void syscall_exit(regstate* regs);
 
     // helpers for waitpid
     proc* find_zombie_child();

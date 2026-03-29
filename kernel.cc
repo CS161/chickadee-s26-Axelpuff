@@ -382,75 +382,7 @@ uintptr_t proc::syscall(regstate* regs) {
     return syscall_fork(regs);
 
   case SYSCALL_EXIT: {
-    // log_printf("Process %ld is exiting...\n", this->id_);
-
-    // ??? Does it matter where this goes within the function?
-    if (this->id_ == 1) {
-      process_halt();
-      break; // will not be reached
-    }
-    
-    {
-      spinlock_guard guard_h(phierarchy_lock);  
-      // reparent kids
-      for (proc* p = this->children.front();
-	   p != nullptr;
-	   p = this->children.front()) {
-	// log_printf("Reparenting %d to init\n", p->id_);
-	p->parent_id_ = 1;
-	this->children.erase(p);
-      
-	spinlock_guard guard(ptable_lock);  
-	assert(ptable[1]);
-	ptable[1]->children.push_front(p);
-	// log_printf("Done reparenting %d\n", p->id_);
-      }
-    }
-    
-    x86_64_pagetable* pt;
-    {
-      spinlock_guard guard(ptable_lock);  
-      pt = this->pagetable_;
-      this->pagetable_ = nullptr;
-    }
-    
-    set_pagetable(early_pagetable);
-    cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
-    regs_ = regs; // ??? inefficient? this state is never used
-    
-    {
-      // decrement fds
-      spinlock_guard guard_f(fd_table_lock);
-      for (int i = 0; i < N_FILEDESC; i++) {
-	if (fd_table[i] != FD_EMPTY) {
-	  close_fd(i, fd_table);
-	}
-      }
-    }
-    
-    {
-      spinlock_guard guard_h(phierarchy_lock);
-      spinlock_guard guard(ptable_lock);
-      // mark as zombie
-      this->pstate_ = ps_zombie;
-      // set exit status
-      this->exit_status_ = regs->reg_rdi;
-      // wake up waiters (won't activate until lock is released)
-      proc_exit_wq.notify_all();
-      // notify parent if parent is sleeping
-      if (parent_id_ != 1
-	  && ptable[parent_id_] // valid since we have ptable_lock
-	  && ptable[parent_id_]->pstate_ == proc::ps_blocked
-	  ) {
-	assert(ptable[parent_id_]->blocked_wq_ != -1);
-	spinlock_guard sleep_guard(sleep_lock);
-	ptable[parent_id_]->child_exited_ = 1;
-	sleep_wq_wheel[ptable[parent_id_]->blocked_wq_].notify_all();
-      }
-    }
-    
-    // from this point on the proc struct and stack might be obliterated
-    yield_noreturn();
+    syscall_exit(regs); // calls yield_noreturn();
     break; // will not be reached
   }
 
@@ -1002,9 +934,76 @@ int proc::syscall_fork(regstate* regs) {
 // proc::syscall_exit(regs)
 //    Exit current process.
 
-// void proc::syscall_exit(regstate* regs) {  
-//   // ??? could not putting a lock here could lead to weird things if multiple threads were on this CPU
-// }
+void proc::syscall_exit(regstate* regs) {  
+    // log_printf("Process %ld is exiting...\n", this->id_);
+
+    if (this->id_ == 1) {
+      process_halt();
+    }
+    
+    {
+      spinlock_guard guard_h(phierarchy_lock);  
+      // reparent kids
+      for (proc* p = this->children.front();
+	   p != nullptr;
+	   p = this->children.front()) {
+	// log_printf("Reparenting %d to init\n", p->id_);
+	p->parent_id_ = 1;
+	this->children.erase(p);
+      
+	spinlock_guard guard(ptable_lock);  
+	assert(ptable[1]);
+	ptable[1]->children.push_front(p);
+	// log_printf("Done reparenting %d\n", p->id_);
+      }
+    }
+    
+    x86_64_pagetable* pt;
+    {
+      spinlock_guard guard(ptable_lock);  
+      pt = this->pagetable_;
+      this->pagetable_ = nullptr;
+    }
+    
+    set_pagetable(early_pagetable);
+    cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
+    regs_ = regs; // ??? inefficient? this state is never used
+    
+    {
+      // decrement fds
+      spinlock_guard guard_f(fd_table_lock);
+      for (int i = 0; i < N_FILEDESC; i++) {
+	if (fd_table[i] != FD_EMPTY) {
+	  close_fd(i, fd_table);
+	}
+      }
+    }
+    
+    {
+      spinlock_guard guard_h(phierarchy_lock);
+      spinlock_guard guard(ptable_lock);
+      // mark as zombie
+      this->pstate_ = ps_zombie;
+      // set exit status
+      this->exit_status_ = regs->reg_rdi;
+      // wake up waiters (won't activate until lock is released)
+      proc_exit_wq.notify_all();
+      // notify parent if parent is sleeping
+      if (parent_id_ != 1
+	  && ptable[parent_id_] // valid since we have ptable_lock
+	  && ptable[parent_id_]->pstate_ == proc::ps_blocked
+	  ) {
+	assert(ptable[parent_id_]->blocked_wq_ != -1);
+	spinlock_guard sleep_guard(sleep_lock);
+	ptable[parent_id_]->child_exited_ = 1;
+	sleep_wq_wheel[ptable[parent_id_]->blocked_wq_].notify_all();
+      }
+    }
+    
+    // from this point on the proc struct and stack might be obliterated
+    yield_noreturn();
+}
+
 
 // proc::syscall_read(regs), proc::syscall_write(regs),
 // proc::syscall_readdiskfile(regs)

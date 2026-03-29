@@ -262,7 +262,7 @@ int memf_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   // get memfile lock
   spinlock_guard guard(m->lock_);
   log_printf("File len is %lu\n", m->len_);
-  // let go of initfs lock (and vnode lock. (unrelated?) I think the caller actually should keep the file lock in order to update file `off` with the return value, see "oof!!!" note below)
+  // let go of initfs lock and vnode lock
   memfile::initfs_lock.unlock(init_irqs);
   vn->refcount_lock.unlock(irqs);
   // read from relevant location in file (return 0 if past end, also log printf/assert that)
@@ -272,7 +272,9 @@ int memf_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   uintptr_t start_copy = reinterpret_cast<uintptr_t>(m->data_) + uio->off;
   size_t read_sz = min(m->len_ - static_cast<size_t>(uio->off), uio->sz);
   memcpy(uio->buf, reinterpret_cast<char *>(start_copy), read_sz);
-  // return amount read (oof!!! this will not get reflected in the file struct rn)
+  // return amount read
+  // (this will not get reflected in the file struct `off` if it is at the end of the
+  // file and reads less than the intended amount, but this has no functional effect)
   log_printf("Returned size: %zu\n", read_sz);
   return read_sz;
 }
@@ -385,8 +387,7 @@ void init_pipe_files(file* read_file, file* write_file) {
 
 // caller should possess file_table_lock
 int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
-  // !!! tentative: acquisition order is `... file -> (vnode ->) initfs -> specific memfile`
-  // exception is here, where vnode comes last, because it doesn't make sense to allocate and
+  // exception to lock acquisiton here, where vnode comes last, because it doesn't make sense to allocate and
   // deallocate it (also nothing will contend for it)
   spinlock_guard guard_file(file_slot->file_lock);
 
