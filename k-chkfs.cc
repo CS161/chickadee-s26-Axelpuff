@@ -7,6 +7,23 @@ bufcache bufcache::bc;
 bufcache::bufcache() {
 }
 
+// Caller MUST HOLD bc->lock_!!!
+size_t evict_unrefd_block(bufcache *bc) {
+  assert(bc->lock_.is_locked());
+  for (size_t i = 0; i != bufcache::nslots; ++i) {
+    int copy = bc->slots_[i].state_;
+    int copy2 = bc->slots_[i].ref_;
+    log_printf("bcslot %i state: %i\n", i, copy);
+    log_printf("bcslot %i refcount: %i\n", i, copy2);
+    // the state must change (from getting the lock) before the refcount increases, so there's no race here
+    if (bc->slots_[i].ref_ == 0 && bc->slots_[i].state_ == bcslot::s_clean) {
+      log_printf("selecting...\n");
+      bc->slots_[i].clear();
+      return i;
+    }
+  }
+  return size_t(-1);
+}
 
 // bufcache::load(bn, cleaner)
 //    Reads disk block `bn` into the buffer cache and returns a reference
@@ -22,7 +39,7 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
     assert(chkfs::blocksize == PAGESIZE);
     auto irqs = lock_.lock();
 
-    // look for slot containing `bn`
+    // look for slot containing `bn`, keep track of last free slot
     size_t i, empty_slot = -1;
     for (i = 0; i != nslots; ++i) {
         if (slots_[i].empty()) {
@@ -37,10 +54,13 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
     // if not found, use free slot
     if (i == nslots) {
         if (empty_slot == size_t(-1)) {
+	  empty_slot = evict_unrefd_block(this);
+	  if (empty_slot == size_t(-1)) {
             // cache full!
             lock_.unlock(irqs);
             log_printf("bufcache: no room for block %u\n", bn);
             return nullptr;
+	  }
         }
         i = empty_slot;
     }
@@ -132,9 +152,9 @@ bool bcslot::load(irqstate& irqs, block_clean_function cleaner) {
 void bcslot::decrement_reference_count() {
     spinlock_guard guard(lock_);    // needed in case we `clear()`
     assert(ref_ != 0);
-    if (--ref_ == 0) {
-        clear();
-    }
+    --ref_;
+    // if (--ref_ == 0)
+    //   clear();
 }
 
 
