@@ -11,14 +11,15 @@ bufcache::bufcache() {
 size_t evict_unrefd_block(bufcache *bc) {
   assert(bc->lock_.is_locked());
   for (size_t i = 0; i != bufcache::nslots; ++i) {
-    int copy = bc->slots_[i].state_;
-    int copy2 = bc->slots_[i].ref_;
-    log_printf("bcslot %i state: %i\n", i, copy);
-    log_printf("bcslot %i refcount: %i\n", i, copy2);
+    // int copy = bc->slots_[i].state_;
+    // int copy2 = bc->slots_[i].ref_;
+    // log_printf("bcslot %i state: %i\n", i, copy);
+    // log_printf("bcslot %i refcount: %i\n", i, copy2);
     // the state must change (from getting the lock) before the refcount increases, so there's no race here
     if (bc->slots_[i].ref_ == 0 && bc->slots_[i].state_ == bcslot::s_clean) {
-      log_printf("selecting...\n");
+      bc->slots_[i].lock_buffer();
       bc->slots_[i].clear();
+      bc->slots_[i].unlock_buffer();
       return i;
     }
   }
@@ -53,7 +54,8 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
 
     // if not found, use free slot
     if (i == nslots) {
-        if (empty_slot == size_t(-1)) {
+      log_printf("couldn't find\n");
+      if (empty_slot == size_t(-1)) {
 	  empty_slot = evict_unrefd_block(this);
 	  if (empty_slot == size_t(-1)) {
             // cache full!
@@ -63,6 +65,8 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
 	  }
         }
         i = empty_slot;
+    } else {
+      log_printf("found\n");
     }
 
     // acquire lock on slot
