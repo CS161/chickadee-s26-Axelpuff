@@ -53,7 +53,7 @@ using bcref = ref_ptr<bcslot>;
 struct bufcache {
     using blocknum_t = chkfs::blocknum_t;
 
-    static constexpr size_t nslots = 5;
+    static constexpr size_t nslots = 10;
 
     spinlock lock_;                  // protects all entries' bn_ and ref_
     wait_queue read_wq_;
