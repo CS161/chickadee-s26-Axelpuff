@@ -10,16 +10,10 @@ bufcache::bufcache() {
 // Caller MUST HOLD bc->lock_!!!
 size_t evict_unrefd_block(bufcache *bc) {
   assert(bc->lock_.is_locked());
-  for (size_t i = 0; i != bufcache::nslots; ++i) {
-    // int copy = bc->slots_[i].state_;
-    // int copy2 = bc->slots_[i].ref_;
-    // log_printf("bcslot %i state: %i\n", i, copy);
-    // log_printf("bcslot %i refcount: %i\n", i, copy2);
-    // the state must change (from getting the lock) before the refcount increases, so there's no race here
+  for (size_t i = bufcache::nslots - 1; i != size_t(-1); --i) {
+    spinlock_guard guard(bc->slots_[i].lock_);    // needed in case we `clear()`
     if (bc->slots_[i].ref_ == 0 && bc->slots_[i].state_ == bcslot::s_clean) {
-      bc->slots_[i].lock_buffer();
       bc->slots_[i].clear();
-      bc->slots_[i].unlock_buffer();
       return i;
     }
   }
@@ -54,7 +48,7 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
 
     // if not found, use free slot
     if (i == nslots) {
-      log_printf("couldn't find\n");
+      log_printf("couldn't find the existing block\n");
       if (empty_slot == size_t(-1)) {
 	  empty_slot = evict_unrefd_block(this);
 	  if (empty_slot == size_t(-1)) {
@@ -63,10 +57,11 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
             log_printf("bufcache: no room for block %u\n", bn);
             return nullptr;
 	  }
-        }
-        i = empty_slot;
+	  log_printf("evicted an old block\n");
+      }
+      i = empty_slot;
     } else {
-      log_printf("found\n");
+      log_printf("found the existing block\n");
     }
 
     // acquire lock on slot
@@ -75,8 +70,9 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
 
     // mark allocated if empty
     if (slot.empty()) {
-        slot.state_ = bcslot::s_allocated;
-        slot.bn_ = bn;
+      log_printf("did the important metadata stuff (block number %u)\n", bn);
+      slot.state_ = bcslot::s_allocated;
+      slot.bn_ = bn;
     }
 
     // no longer need cache lock
