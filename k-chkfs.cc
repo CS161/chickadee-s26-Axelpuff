@@ -48,29 +48,23 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
 
     // if not found, use free slot
     if (i == nslots) {
-      log_printf("couldn't find the existing block\n");
       if (empty_slot == size_t(-1)) {
 	  empty_slot = evict_unrefd_block(this);
 	  if (empty_slot == size_t(-1)) {
             // cache full!
             lock_.unlock(irqs);
-            log_printf("bufcache: no room for block %u\n", bn);
             return nullptr;
 	  }
-	  log_printf("evicted an old block\n");
       }
       i = empty_slot;
-    } else {
-      log_printf("found the existing block\n");
     }
-
+    
     // acquire lock on slot
     auto& slot = slots_[i];
     slot.lock_.lock_noirq();
 
     // mark allocated if empty
     if (slot.empty()) {
-      log_printf("did the important metadata stuff (block number %u)\n", bn);
       slot.state_ = bcslot::s_allocated;
       slot.bn_ = bn;
     }
