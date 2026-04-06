@@ -395,11 +395,41 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   //   }
   // }
   // write to relevant location in file
-  uintptr_t start_copy = reinterpret_cast<uintptr_t>(slot->buf_) + uio->off;
-  memcpy(reinterpret_cast<char *>(start_copy), uio->buf, uio->sz);
-  slot->unlock_buffer();
+  chkfs_fileiter it(vn->ino_.get());
+  
+  size_t nwrite = 0;
+  off_t off = uio->off;
+  while (nwrite < uio->sz) {
+    // copy data from current block
+    if (auto e = it.find(off).load()) {
+      e->lock_buffer(); // no deadlock risk I think?
+      unsigned b = it.block_relative_offset();
+      size_t ncopy = min(
+			 size_t(vn->ino_->size - it.offset()),   // bytes left in file
+			 chkfs::blocksize - b,              // bytes left in block
+			 uio->sz - nwrite                         // bytes left in request
+			 );
+      memcpy(e->buf_ + b, uio->buf + nwrite, ncopy);
+      e->unlock_buffer();
+      
+      nwrite += ncopy;
+      off += ncopy;
+      // not implemented yet (write past end of file, write past end of block)
+      assert(size_t(vn->ino_->size - it.offset()) != 0);
+      assert(chkfs::blocksize - b != 0);
+      if (ncopy == 0) { // ??? does this do the intended behavior here? why did this work for writes in the first place?
+	break;
+      }
+    } else {
+      break;
+    }
+  }
+  //   uintptr_t start_copy = reinterpret_cast<uintptr_t>(slot->buf_) + uio->off;
+  //   memcpy(reinterpret_cast<char *>(start_copy), uio->buf, uio->sz);
+  // slot->unlock_buffer();
+ 
   vn->ino_->unlock_write();
-  // !!! have to do flush stuff...
+  // !!! have to do flush stuff (writeback) eventually
   return uio->sz;
 }
 
