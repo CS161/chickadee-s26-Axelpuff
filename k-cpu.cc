@@ -66,6 +66,7 @@ void cpustate::schedule() {
     assert(contains(rdrsp()), current_);
     assert(is_cli(), current_);
     // assert(!file_table_lock.is_locked());
+    log_printf("spinlock depth: %i\n", spinlock_depth_);
     assert(spinlock_depth_ == 0 && "schedule while spinlocked", current_);
     
     // initialize idle task

@@ -498,6 +498,14 @@ uintptr_t proc::syscall(regstate* regs) {
       return E_FAULT;
     }
     const char* pathname = reinterpret_cast<const char*>(addr);
+
+    log_printf("yo what\n");
+    // read root directory to find file inode number
+    auto ino = chkfsstate::get().lookup_inode(pathname);
+    if (!ino) {
+      return E_NOENT;
+    }
+    // ino->lock_write();
     
     // Find fd
     int fd = -1;
@@ -525,7 +533,7 @@ uintptr_t proc::syscall(regstate* regs) {
       return E_NFILE;
     }
 
-    int err = init_diskfile_entry(&file_table[fileid], pathname, flags); //init_memfile_entry(&file_table[fileid], pathname, flags);
+    int err = init_diskfile_entry(&file_table[fileid], std::move(ino), flags); //init_memfile_entry(&file_table[fileid], pathname, flags);
     if (err < 0) {
       return err;
     }

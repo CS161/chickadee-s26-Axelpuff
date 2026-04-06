@@ -147,4 +147,4 @@ int vnode_decref(vnode* vn);
 void init_kc_file(file* kc_file);
 void init_pipe_files(file* read_file, file* write_file);
 int init_memfile_entry(file* file_slot, const char* pathname, int flags);
-int init_diskfile_entry(file* file_slot, const char* pathname, int flags); // maybe needed
+int init_diskfile_entry(file* file_slot, chkfs_iref ino, int flags); // maybe needed

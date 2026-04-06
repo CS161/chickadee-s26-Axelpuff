@@ -550,16 +550,10 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
 }
 
 // caller should possess file_table_lock
-int init_diskfile_entry(file* file_slot, const char* pathname, int flags) {
+int init_diskfile_entry(file* file_slot, chkfs_iref ino, int flags) {
   // exception to lock acquisiton here, where vnode comes last, because it doesn't make sense to allocate and
   // deallocate it (also nothing will contend for it)
   spinlock_guard guard_file(file_slot->file_lock);
-
-  // read root directory to find file inode number
-  auto ino = chkfsstate::get().lookup_inode(pathname);
-  if (!ino) {
-    return E_NOENT;
-  }
   
   // Make vnode
   vnode* chkvn = knew<vnode>(&chk_vops, std::move(ino));
@@ -568,6 +562,8 @@ int init_diskfile_entry(file* file_slot, const char* pathname, int flags) {
     spinlock_guard guard(chkvn->refcount_lock);
     chkvn->refcount = 1;
   }
+
+  ino->unlock_write();
   
   file_slot->type = FTYPE_VNODE;
   file_slot->refcount_ = 0; 
