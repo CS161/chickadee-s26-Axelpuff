@@ -1,4 +1,6 @@
 #include "kernel.hh" // holy crap this WILL NOT COMPILE with anything less than this
+#include "k-chkfs.hh"
+#include "k-chkfsiter.hh"
 
 // k-vfs.cc
 //
@@ -140,12 +142,8 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags);
 
 struct diskfile_loader : public proc_loader {
   chkfs_iref ino_;
-  // ??? sus and wonky constructor and destructor
   inline diskfile_loader(chkfs_iref ino, x86_64_pagetable* pt)
-    : proc_loader(pt), ino_{std::move(ino)} {
-  }
-  inline ~diskfile_loader() {
-    delete ino_;
+    : proc_loader(pt), ino_(std::move(ino)) {
   }
   get_page_type get_page(size_t off) override;
   void put_page(buffer) override;

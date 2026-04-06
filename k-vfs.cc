@@ -22,8 +22,13 @@ auto diskfile_loader::get_page(size_t off) -> get_page_type {
     ino_->lock_read();
     chkfs_fileiter it(ino_.get(), off); // where is .get  defined???
 
-    size_t nread = 0;
     size_t sz = size_t(ino_->size - it.offset()); // for now just read to end of file
+    uint8_t* data = reinterpret_cast<uint8_t*>(kalloc(sz));
+    if (!data) {
+      return std::unexpected(E_NOMEM);
+    }
+    size_t nread = 0;
+    // ??? how much do we actually need to read?
     while (nread < sz) {
       // copy data from current block
       if (auto e = it.find(off).load()) {
@@ -33,7 +38,7 @@ auto diskfile_loader::get_page(size_t off) -> get_page_type {
 			   chkfs::blocksize - b              // bytes left in block
 			   // sz - nread                         // bytes left in request
 			   );
-	memcpy(buf + nread, e->buf_ + b, ncopy);
+	memcpy(data + nread, e->buf_ + b, ncopy);
 
 	nread += ncopy;
 	off += ncopy;
@@ -44,20 +49,13 @@ auto diskfile_loader::get_page(size_t off) -> get_page_type {
 	break;
       }
     }
-
     ino_->unlock_read();
-    // should later allocate before trying to read from disk?
-    // ??? how much do we actually need to read?
-    buffer* buf = knew<buffer>(off, sz); // how to get start position and size from inode?
-    if (!buf) {
-      return std::unexpected(E_NOMEM);
-    }
-    return buf;
-    // return buffer(memfile_->data_ + off, memfile_->len_ - off);
+    assert(nread==sz);
+    return buffer(data, sz);
 }
 
-void diskfile_loader::put_page(buffer) {
-  delete buffer;
+void diskfile_loader::put_page(buffer b) {
+  kfree(b.data);
 }
 
 

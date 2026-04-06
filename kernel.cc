@@ -582,19 +582,19 @@ uintptr_t proc::syscall(regstate* regs) {
     //   log_printf("memfile not found\n");
     //   return mindex;
     // }
-    // x86_64_pagetable* pt = knew_pagetable();
-    // if (!pt) {
-    //   return E_NOMEM;
-    // }
+    x86_64_pagetable* pt = knew_pagetable();
+    if (!pt) {
+      return E_NOMEM;
+    }
 
     // read root directory to find file inode number
-    auto ino = chkfsstate::get().lookup_inode(filename);
+    auto ino = chkfsstate::get().lookup_inode(pathname);
     if (!ino) {
       return E_NOENT;
     }
     
     // load code and data into pagetable
-    diskfile_loader ld(ino, pt);
+    diskfile_loader ld(std::move(ino), pt);
     // memfile_loader ld(mindex, pt);
     int r = proc::load(ld);
     if (r < 0) {
