@@ -54,7 +54,7 @@ int vnode_fops::fo_decref(file* f) const {
   assert(f->refcount_ > 0);
   if (--f->refcount_ == 0) {
     if (f->vnode_->ops->vop_decref(f->vnode_) == 0) {
-      kfree(f->vnode_);
+      delete f->vnode_;
     }
     f->type = FTYPE_NONE;
     // caller doesn't really have to do anything
@@ -317,7 +317,7 @@ int memf_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
 
 int chkfs_vops::vop_decref(vnode* vn) const { // may be worth inlining if all vop_decrefs look like this
   assert(vn->refcount > 0);
-  return --vn->refcount; // caller should then free this vnode
+  return --vn->refcount;  // caller should then free this vnode
 }
 
 int chkfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {

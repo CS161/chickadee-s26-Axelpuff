@@ -147,8 +147,6 @@ void bcslot::decrement_reference_count() {
     spinlock_guard guard(lock_);    // needed in case we `clear()`
     assert(ref_ != 0);
     --ref_;
-    // if (--ref_ == 0)
-    //   clear();
 }
 
 
