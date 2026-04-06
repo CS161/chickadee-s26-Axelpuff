@@ -6,6 +6,61 @@
 //
 //    Virtual file system
 
+// diskfile_loader functions
+
+// These functions fulfill the requirements of `proc_loader` using a
+// disk file. See `k-proc.cc` for more on `proc_loader`s.
+
+auto diskfile_loader::get_page(size_t off) -> get_page_type {
+    if (!ino_) {
+        return std::unexpected(E_NOENT);
+    } else if (off >= ino_->size) {
+        return std::unexpected(E_NXIO);
+    }
+    
+    // read file inode
+    ino_->lock_read();
+    chkfs_fileiter it(ino_.get(), off); // where is .get  defined???
+
+    size_t nread = 0;
+    size_t sz = size_t(ino_->size - it.offset()); // for now just read to end of file
+    while (nread < sz) {
+      // copy data from current block
+      if (auto e = it.find(off).load()) {
+	unsigned b = it.block_relative_offset();
+	size_t ncopy = min(
+			   size_t(ino_->size - it.offset()),   // bytes left in file
+			   chkfs::blocksize - b              // bytes left in block
+			   // sz - nread                         // bytes left in request
+			   );
+	memcpy(buf + nread, e->buf_ + b, ncopy);
+
+	nread += ncopy;
+	off += ncopy;
+	if (ncopy == 0) {
+	  break;
+	}
+      } else {
+	break;
+      }
+    }
+
+    ino_->unlock_read();
+    // should later allocate before trying to read from disk?
+    // ??? how much do we actually need to read?
+    buffer* buf = knew<buffer>(off, sz); // how to get start position and size from inode?
+    if (!buf) {
+      return std::unexpected(E_NOMEM);
+    }
+    return buf;
+    // return buffer(memfile_->data_ + off, memfile_->len_ - off);
+}
+
+void diskfile_loader::put_page(buffer) {
+  delete buffer;
+}
+
+
 ssize_t bbuffer::write(const char* buf, size_t sz) {
   assert(this->lock_.is_locked());
   assert(!this->write_closed_);
@@ -423,3 +478,4 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
   file_slot->ops = &vn_fops;
   return 0;
 }
+

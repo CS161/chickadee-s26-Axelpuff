@@ -540,6 +540,10 @@ uintptr_t proc::syscall(regstate* regs) {
     uintptr_t argv_addr = regs->reg_rsi;
     int argc = regs->reg_rdx;
     
+    if (!sata_disk) {
+      return E_IO;
+    }
+    
     // validate pathname
     if (valid_user_buffer(pagetable_, pathname_addr, PTE_P | PTE_U) <= 0) {
       return E_FAULT;
@@ -571,20 +575,27 @@ uintptr_t proc::syscall(regstate* regs) {
       log_printf("argv not nullterminated\n");
       return E_FAULT;
     }
-    
-    // look up memfile
-    int mindex = memfile::initfs_lookup(pathname, memfile::optional);
-    if (mindex < 0) {
-      log_printf("memfile not found\n");
-      return mindex;
-    }
-    x86_64_pagetable* pt = knew_pagetable();
-    if (!pt) {
-      return E_NOMEM;
-    }
+        
+    // // look up memfile
+    // int mindex = memfile::initfs_lookup(pathname, memfile::optional);
+    // if (mindex < 0) {
+    //   log_printf("memfile not found\n");
+    //   return mindex;
+    // }
+    // x86_64_pagetable* pt = knew_pagetable();
+    // if (!pt) {
+    //   return E_NOMEM;
+    // }
 
+    // read root directory to find file inode number
+    auto ino = chkfsstate::get().lookup_inode(filename);
+    if (!ino) {
+      return E_NOENT;
+    }
+    
     // load code and data into pagetable
-    memfile_loader ld(mindex, pt);
+    diskfile_loader ld(ino, pt);
+    // memfile_loader ld(mindex, pt);
     int r = proc::load(ld);
     if (r < 0) {
       cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
