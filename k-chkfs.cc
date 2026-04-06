@@ -135,6 +135,15 @@ bool bcslot::load(irqstate& irqs, block_clean_function cleaner) {
     }
 }
 
+// bcslot::flush(irqstate& irqs)
+bool bcslot::flush(irqstate& irqs) {
+  lock_.unlock(irqs);
+  sata_disk->write(buf_, chkfs::blocksize,
+		  bn_ * chkfs::blocksize);
+  irqs = lock_.lock();
+  state_ = s_clean;
+  return true;
+}
 
 // bcslot::decrement_reference_count()
 //    Decrements this buffer cache slot’s reference count.
@@ -183,14 +192,24 @@ void bcslot::unlock_buffer() {
 //    If `drop > 0`, then additionally free all buffer cache contents,
 //    except referenced blocks. If `drop > 1`, then assert that all inode
 //    and data blocks are unreferenced.
-
+ 
 int bufcache::sync(int drop) {
-    // write dirty buffers to disk
-    // Your code here!
+  // write dirty buffers to disk
+  spinlock_guard guard(lock_);
+  for (size_t i = 0; i != nslots; ++i) {
+    if (slots_[i].state_ == bcslot::s_dirty) {
+      auto irqs = slots_[i].lock_.lock();
+      guard.unlock(); // flush might yield
+      assert(slots_[i].flush(irqs));
+      slots_[i].lock_.unlock(irqs);
+      guard.lock(); // I think this has to be regained here to avoid deadlock
+    }
+  }
 
+  
     // drop clean buffers if requested
     if (drop > 0) {
-        spinlock_guard guard(lock_);
+        // spinlock_guard guard(lock_);
         for (size_t i = 0; i != nslots; ++i) {
             spinlock_guard eguard(slots_[i].lock_);
 

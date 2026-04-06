@@ -46,6 +46,7 @@ struct bcslot {
     // internal functions
     void clear();
     bool load(irqstate& irqs, block_clean_function cleaner);
+    bool flush(irqstate& irqs);
 };
 
 using bcref = ref_ptr<bcslot>;
