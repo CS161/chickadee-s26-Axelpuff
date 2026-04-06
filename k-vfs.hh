@@ -137,14 +137,3 @@ int vnode_decref(vnode* vn);
 void init_kc_file(file* kc_file);
 void init_pipe_files(file* read_file, file* write_file);
 int init_memfile_entry(file* file_slot, const char* pathname, int flags);
-
-// diskfile::loader: loads a `proc` from a `memfile` (??? idk where else to put this)
-
-struct diskfile_loader : public proc_loader {
-  chkfs_iref ino_;
-  inline diskfile_loader(chkfs_iref ino, x86_64_pagetable* pt)
-    : proc_loader(pt), ino_(std::move(ino)) {
-  }
-  get_page_type get_page(size_t off) override;
-  void put_page(buffer) override;
-};

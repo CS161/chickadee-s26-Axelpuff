@@ -347,3 +347,55 @@ auto memfile_loader::get_page(size_t off) -> get_page_type {
 void memfile_loader::put_page(buffer) {
     // no need to do anything
 }
+
+// diskfile_loader functions
+
+// These functions fulfill the requirements of `proc_loader` using a
+// disk file.
+
+auto diskfile_loader::get_page(size_t off) -> get_page_type {
+    if (!ino_) {
+        return std::unexpected(E_NOENT);
+    } else if (off >= ino_->size) {
+        return std::unexpected(E_NXIO);
+    }
+    
+    // read file inode
+    ino_->lock_read();
+    chkfs_fileiter it(ino_.get(), off); // where is .get  defined???
+
+    size_t sz = size_t(ino_->size - it.offset()); // for now just read to end of file
+    uint8_t* data = reinterpret_cast<uint8_t*>(kalloc(sz));
+    if (!data) {
+      return std::unexpected(E_NOMEM);
+    }
+    size_t nread = 0;
+    // ??? how much do we actually need to read?
+    while (nread < sz) {
+      // copy data from current block
+      if (auto e = it.find(off).load()) {
+	unsigned b = it.block_relative_offset();
+	size_t ncopy = min(
+			   size_t(ino_->size - it.offset()),   // bytes left in file
+			   chkfs::blocksize - b              // bytes left in block
+			   // sz - nread                         // bytes left in request
+			   );
+	memcpy(data + nread, e->buf_ + b, ncopy);
+
+	nread += ncopy;
+	off += ncopy;
+	if (ncopy == 0) {
+	  break;
+	}
+      } else {
+	break;
+      }
+    }
+    ino_->unlock_read();
+    assert(nread==sz);
+    return buffer(data, sz);
+}
+
+void diskfile_loader::put_page(buffer b) {
+  kfree(b.data);
+}

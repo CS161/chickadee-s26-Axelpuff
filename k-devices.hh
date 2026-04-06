@@ -2,6 +2,8 @@
 #define CHICKADEE_K_DEVICES_HH
 #include "kernel.hh"
 #include "k-wait.hh"
+#include "k-chkfs.hh"
+#include "k-chkfsiter.hh"
 
 // keyboardstate: keyboard buffer and keyboard interrupts
 
@@ -145,6 +147,18 @@ struct memfile_loader : public proc_loader {
     }
     get_page_type get_page(size_t off) override;
     void put_page(buffer) override;
+};
+
+
+// diskfile::loader: loads a `proc` from a `memfile`
+
+struct diskfile_loader : public proc_loader {
+  chkfs_iref ino_;
+  inline diskfile_loader(chkfs_iref ino, x86_64_pagetable* pt)
+    : proc_loader(pt), ino_(std::move(ino)) {
+  }
+  get_page_type get_page(size_t off) override;
+  void put_page(buffer) override;
 };
 
 #endif
