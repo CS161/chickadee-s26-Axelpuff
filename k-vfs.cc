@@ -62,8 +62,8 @@ int vnode_fops::fo_decref(file* f) const {
   return f->refcount_; 
 }
 
-const off_t max_off = std::numeric_limits<off_t>::max();
-const off_t max_sz = std::numeric_limits<size_t>::max();
+const off_t MAX_OFF_T = std::numeric_limits<off_t>::max();
+const off_t MAX_SZ_T = std::numeric_limits<size_t>::max();
 
 int vnode_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
   assert(f->file_lock.is_locked());
@@ -75,7 +75,7 @@ int vnode_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
     f->vnode_->refcount_lock.unlock(vn_irqs);
     return E_BADF;
   }
-  assert(max_off - static_cast<off_t>(sz) > f->off_);
+  assert(MAX_OFF_T - static_cast<off_t>(sz) > f->off_);
   
   uio arg;
   arg.off = f->off_;
@@ -95,7 +95,7 @@ int vnode_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
     f->vnode_->refcount_lock.unlock(vn_irqs);
     return E_BADF;
   }
-  assert(max_off - static_cast<off_t>(sz) > f->off_);
+  assert(MAX_OFF_T - static_cast<off_t>(sz) > f->off_);
 
   uio arg;
   arg.off = f->off_;
@@ -185,6 +185,8 @@ int pipe_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
   return f->pipe_->write(buf, sz);
 }
 
+// kcfs_vops (keyboard-console "file system" vnode functions)
+
 int kcfs_vops::vop_decref(vnode* vn) const {
   assert(vn->refcount > 0);
   return --vn->refcount; // caller should then free this vnode
@@ -246,6 +248,8 @@ int kcfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   return n;
 }
 
+// memf_vops (memfile vnode functions)
+
 int memf_vops::vop_decref(vnode* vn) const { // may be worth inlining if all vop_decrefs look like this
   assert(vn->refcount > 0);
   return --vn->refcount; // caller should then free this vnode
@@ -291,7 +295,7 @@ int memf_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   // let go of initfs lock and vnode lock
   memfile::initfs_lock.unlock(init_irqs);
   vn->refcount_lock.unlock(irqs);
-  if (max_sz - uio->sz < static_cast<size_t>(uio->off)) {
+  if (MAX_SZ_T - uio->sz < static_cast<size_t>(uio->off)) {
   log_printf("Capacity is  %zu\n", m->capacity_);
     return E_NOSPC;
   }
@@ -309,6 +313,96 @@ int memf_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   return uio->sz;
 }
 
+// chkfs_vops (chickadee disk file system vnode functions)
+
+int chkfs_vops::vop_decref(vnode* vn) const { // may be worth inlining if all vop_decrefs look like this
+  assert(vn->refcount > 0);
+  return --vn->refcount; // caller should then free this vnode
+}
+
+int chkfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
+  log_printf("I'm getting a read of size %zu\n", uio->sz);
+  log_printf("Offset is %lu\n", uio->off);
+  // lock
+  vn->ino_->lock_read();
+  size_t sz = vn->ino_->size; // ??? is vn->ino_->size the right thing?
+  // bcslot* slot = vn->ino_->slot(); 
+  log_printf("File size is %lu\n", sz);
+  // let go of vnode lock
+  vn->refcount_lock.unlock(irqs);
+  // read from relevant location in file (return 0 if past end)
+  if (static_cast<size_t>(uio->off) >= sz) {
+    return 0;
+  }
+
+  chkfs_fileiter it(vn->ino_.get());
+  
+  size_t nread = 0;
+  off_t off = uio->off;
+  while (nread < uio->sz) {
+    // copy data from current block
+    if (auto e = it.find(off).load()) {
+      unsigned b = it.block_relative_offset();
+      size_t ncopy = min(
+			 size_t(vn->ino_->size - it.offset()),   // bytes left in file
+			 chkfs::blocksize - b,              // bytes left in block
+			 uio->sz - nread                         // bytes left in request
+			 );
+      memcpy(uio->buf + nread, e->buf_ + b, ncopy);
+
+      nread += ncopy;
+      off += ncopy;
+      if (ncopy == 0) {
+	break;
+      }
+    } else {
+      break;
+    }
+  }
+  // assert(slot->state_ == bcslot::s_clean || slot->state_ == bcslot::s_dirty);
+  // ??? I was trying to copy directly from the slot cache. Was I insane? Does chkfs_fileiter already handle this?
+  // uintptr_t start_copy = reinterpret_cast<uintptr_t>(slot->buf_) + uio->off;
+  // size_t read_sz = min(sz - static_cast<size_t>(uio->off), uio->sz);
+  // memcpy(uio->buf, reinterpret_cast<char *>(start_copy), read_sz);
+  // unlock
+  vn->ino_->unlock_read();
+  // return amount read
+  // (this will not get reflected in the file struct `off` if it is at the end of the
+  // file and reads less than the intended amount, but this has no functional effect)
+  log_printf("Returned size: %zu\n", nread);
+  return nread;
+}
+  
+int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
+  // NOT AT ALL DONE YET!!!
+  // AWFUL IMPLEMENTATION RN (DIRECT WRITING TO SLOT)
+  log_printf("I'm getting a write of size %zu\n", uio->sz);
+  // lock
+  vn->ino_->lock_write();
+  bcslot* slot = vn->ino_->slot();
+  slot->lock_buffer();
+  // let go of vnode lock
+  vn->refcount_lock.unlock(irqs);
+  if (MAX_SZ_T - uio->sz < static_cast<size_t>(uio->off)) {
+    return E_NOSPC;
+  }
+  // expand file if needed
+  // size_t needed_file_sz = uio->sz + static_cast<size_t>(uio->off);
+  // if (needed_file_sz > m->capacity_) {
+  //   int s = m->set_length(needed_file_sz);
+  //   if (s < 0) {
+  //     return s;
+  //   }
+  // }
+  // write to relevant location in file
+  uintptr_t start_copy = reinterpret_cast<uintptr_t>(slot->buf_) + uio->off;
+  memcpy(reinterpret_cast<char *>(start_copy), uio->buf, uio->sz);
+  slot->unlock_buffer();
+  vn->ino_->unlock_write();
+  // !!! have to do flush stuff...
+  return uio->sz;
+}
+
 file file_table[N_FILE];
 spinlock file_table_lock;
 
@@ -316,6 +410,7 @@ vnode_fops vn_fops;
 pipe_fops p_fops;
 kcfs_vops kc_vops;
 memf_vops mf_vops;
+chkfs_vops chk_vops;
 
 int file_incref(file* f) {
   spinlock_guard guard(f->file_lock);
@@ -420,6 +515,35 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
   file_slot->flags = file_flags;
   file_slot->off_ = 0;
   file_slot->vnode_ = mfvn;
+  file_slot->ops = &vn_fops;
+  return 0;
+}
+
+// caller should possess file_table_lock
+int init_diskfile_entry(file* file_slot, const char* pathname, int flags) {
+  // exception to lock acquisiton here, where vnode comes last, because it doesn't make sense to allocate and
+  // deallocate it (also nothing will contend for it)
+  spinlock_guard guard_file(file_slot->file_lock);
+
+  // read root directory to find file inode number
+  auto ino = chkfsstate::get().lookup_inode(pathname);
+  if (!ino) {
+    return E_NOENT;
+  }
+  
+  // Make vnode
+  vnode* chkvn = knew<vnode>(&chk_vops, std::move(ino));
+  int file_flags = ((flags | OF_READ) ? FREAD : 0) | ((flags | OF_WRITE) ? FWRITE : 0);
+  {
+    spinlock_guard guard(chkvn->refcount_lock);
+    chkvn->refcount = 1;
+  }
+  
+  file_slot->type = FTYPE_VNODE;
+  file_slot->refcount_ = 0; 
+  file_slot->flags = file_flags;
+  file_slot->off_ = 0;
+  file_slot->vnode_ = chkvn;
   file_slot->ops = &vn_fops;
   return 0;
 }

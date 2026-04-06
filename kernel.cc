@@ -525,7 +525,7 @@ uintptr_t proc::syscall(regstate* regs) {
       return E_NFILE;
     }
 
-    int err = init_memfile_entry(&file_table[fileid], pathname, flags);
+    int err = init_diskfile_entry(&file_table[fileid], pathname, flags); //init_memfile_entry(&file_table[fileid], pathname, flags);
     if (err < 0) {
       return err;
     }
