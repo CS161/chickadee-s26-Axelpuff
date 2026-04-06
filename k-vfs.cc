@@ -71,7 +71,7 @@ int vnode_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
   auto vn_irqs = f->vnode_->refcount_lock.lock();
   f->file_lock.unlock(irqs);
   
-  if (!(f->flags | FREAD)) {
+  if (!(f->flags & FREAD)) {
     f->vnode_->refcount_lock.unlock(vn_irqs);
     return E_BADF;
   }
@@ -91,7 +91,7 @@ int vnode_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
   auto vn_irqs = f->vnode_->refcount_lock.lock();
   f->file_lock.unlock(irqs);
   
-  if (!(f->flags | FREAD)) {
+  if (!(f->flags & FWRITE)) {
     f->vnode_->refcount_lock.unlock(vn_irqs);
     return E_BADF;
   }
@@ -379,21 +379,12 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   log_printf("I'm getting a write of size %zu\n", uio->sz);
   // lock
   vn->ino_->lock_write();
-  bcslot* slot = vn->ino_->slot();
-  slot->lock_buffer();
   // let go of vnode lock
   vn->refcount_lock.unlock(irqs);
   if (MAX_SZ_T - uio->sz < static_cast<size_t>(uio->off)) {
     return E_NOSPC;
   }
-  // expand file if needed
-  // size_t needed_file_sz = uio->sz + static_cast<size_t>(uio->off);
-  // if (needed_file_sz > m->capacity_) {
-  //   int s = m->set_length(needed_file_sz);
-  //   if (s < 0) {
-  //     return s;
-  //   }
-  // }
+
   // write to relevant location in file
   chkfs_fileiter it(vn->ino_.get());
   
@@ -533,7 +524,7 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
 
   // Make vnode
   vnode* mfvn = knew<vnode>(&mf_vops);
-  int file_flags = ((flags | OF_READ) ? FREAD : 0) | ((flags | OF_WRITE) ? FWRITE : 0);
+  int file_flags = ((flags & OF_READ) ? FREAD : 0) | ((flags & OF_WRITE) ? FWRITE : 0);
   {
     spinlock_guard guard(mfvn->refcount_lock);
     mfvn->refcount = 1;
@@ -551,19 +542,18 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
 
 // caller should possess file_table_lock
 int init_diskfile_entry(file* file_slot, chkfs_iref ino, int flags) {
+  log_printf("hello1\n");
   // exception to lock acquisiton here, where vnode comes last, because it doesn't make sense to allocate and
   // deallocate it (also nothing will contend for it)
   spinlock_guard guard_file(file_slot->file_lock);
   
   // Make vnode
   vnode* chkvn = knew<vnode>(&chk_vops, std::move(ino));
-  int file_flags = ((flags | OF_READ) ? FREAD : 0) | ((flags | OF_WRITE) ? FWRITE : 0);
+  int file_flags = ((flags & OF_READ) ? FREAD : 0) | ((flags & OF_WRITE) ? FWRITE : 0);
   {
     spinlock_guard guard(chkvn->refcount_lock);
     chkvn->refcount = 1;
   }
-
-  ino->unlock_write();
   
   file_slot->type = FTYPE_VNODE;
   file_slot->refcount_ = 0; 

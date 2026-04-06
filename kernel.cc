@@ -499,12 +499,13 @@ uintptr_t proc::syscall(regstate* regs) {
     }
     const char* pathname = reinterpret_cast<const char*>(addr);
 
-    log_printf("yo what\n");
     // read root directory to find file inode number
+    // !!! IMPLIES FILE CREATION NOT SUPPORTED (true rn)
     auto ino = chkfsstate::get().lookup_inode(pathname);
     if (!ino) {
       return E_NOENT;
     }
+    // ??????????
     // ino->lock_write();
     
     // Find fd
@@ -533,6 +534,7 @@ uintptr_t proc::syscall(regstate* regs) {
       return E_NFILE;
     }
 
+    log_printf("hello0\n");
     int err = init_diskfile_entry(&file_table[fileid], std::move(ino), flags); //init_memfile_entry(&file_table[fileid], pathname, flags);
     if (err < 0) {
       return err;
