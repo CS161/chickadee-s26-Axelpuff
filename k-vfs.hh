@@ -83,6 +83,7 @@ struct file_ops {
   virtual int fo_decref(file* f) const = 0;
   virtual int fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const = 0;
   virtual int fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const = 0;
+  virtual off_t fo_seek(file* f, off_t off, int whence) const = 0;
 };
 
 struct vnode_ops {
@@ -102,12 +103,16 @@ struct vnode_fops : public file_ops { // i.e. as opposed to pipe_fops
   int fo_decref(file* f) const override;
   int fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const override;
   int fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const override;
+  off_t fo_seek(file* f, off_t off, int whence) const override;
 };
 
 struct pipe_fops : public file_ops {
   int fo_decref(file* f) const override;
   int fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const override;
   int fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const override;
+  inline off_t fo_seek(file* f, off_t off, int whence) const override {
+    return E_SPIPE;
+  }
 };
 
 struct kcfs_vops : public vnode_ops { // "keyboard-console file system"

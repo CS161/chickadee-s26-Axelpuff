@@ -105,6 +105,11 @@ int vnode_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
   return f->vnode_->ops->vop_write(f->vnode_, &arg, vn_irqs);
 }
 
+
+off_t vnode_fops::fo_seek(file* f, off_t off, int whence) const {
+  return 0;
+}
+
 int pipe_fops::fo_decref(file* f) const {
   assert(f->refcount_ > 0);
   if (--f->refcount_ == 0) {
@@ -440,6 +445,10 @@ int file_write(file* f, char* buf, size_t sz, irqstate &irqs) {
   return f->ops->fo_write(f, buf, sz, irqs);  
 }
 
+off_t file_seek(file* f, off_t off, int whence) {
+  return f->ops->fo_seek(f, off, whence);  
+}
+
 int vnode_incref(vnode* vn) {
   spinlock_guard guard(vn->refcount_lock);
   return vn->ops->vop_incref(vn);
@@ -576,4 +585,3 @@ void init_diskfile_entry(file* f, vnode* chkvn, int flags) {
     f->ops = &vn_fops;
   }
 }
-
