@@ -24,7 +24,8 @@ struct bcslot {
     blocknum_t bn_;                      // disk block number (unless empty)
     unsigned char* buf_ = nullptr;       // memory buffer
     proc* buf_owner_ = nullptr;          // `proc` holding buffer content lock
-
+  
+    list_links dirty_links_;                    // Links for dirty slot list in `bufcache`
 
     // return the index of this slot in the buffer cache
     inline size_t index() const;
@@ -46,7 +47,7 @@ struct bcslot {
     // internal functions
     void clear();
     bool load(irqstate& irqs, block_clean_function cleaner);
-    bool flush(irqstate& irqs);
+  bool flush();// irqstate& irqs);
 };
 
 using bcref = ref_ptr<bcslot>;
@@ -60,6 +61,7 @@ struct bufcache {
     wait_queue read_wq_;
     bcslot slots_[nslots];
 
+    list<bcslot, &bcslot::dirty_links_> dirty_list_;
 
     static inline bufcache& get();
 

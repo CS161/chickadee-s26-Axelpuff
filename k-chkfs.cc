@@ -135,12 +135,11 @@ bool bcslot::load(irqstate& irqs, block_clean_function cleaner) {
     }
 }
 
-// bcslot::flush(irqstate& irqs)
-bool bcslot::flush(irqstate& irqs) {
-  lock_.unlock(irqs);
+// bcslot::flush()
+//    Must be called after `buffer_lock`.
+bool bcslot::flush() {
   sata_disk->write(buf_, chkfs::blocksize,
 		  bn_ * chkfs::blocksize);
-  irqs = lock_.lock();
   state_ = s_clean;
   return true;
 }
@@ -164,16 +163,23 @@ void bcslot::decrement_reference_count() {
 //    with no spinlocks held.
 
 void bcslot::lock_buffer() {
+    spinlock_guard guard_dirty(bufcache::get().lock_); // I think this is necessary to protect dirty_list
     spinlock_guard guard(lock_);
     assert(state_ == s_clean || state_ == s_dirty);
     assert(buf_owner_ != current());
     while (buf_owner_) {
+        guard_dirty.unlock();
         guard.unlock();
         current()->yield();
+	guard_dirty.lock();
         guard.lock();
     }
     buf_owner_ = current();
+    if (dirty_links_.is_linked()) { // for some reason not totally coinciding with it being dirty??
+      dirty_links_.erase();
+    }
     state_ = s_dirty;
+    bufcache::get().dirty_list_.push_back(this); 
 }
 
 
@@ -196,16 +202,15 @@ void bcslot::unlock_buffer() {
 int bufcache::sync(int drop) {
   // write dirty buffers to disk
   spinlock_guard guard(lock_);
-  for (size_t i = 0; i != nslots; ++i) {
-    if (slots_[i].state_ == bcslot::s_dirty) {
-      auto irqs = slots_[i].lock_.lock();
-      guard.unlock(); // flush might yield
-      assert(slots_[i].flush(irqs));
-      slots_[i].lock_.unlock(irqs);
-      guard.lock(); // I think this has to be regained here to avoid deadlock
-    }
+  list<bcslot, &bcslot::dirty_links_> my_dirty;
+  my_dirty.swap(dirty_list_);
+  guard.unlock();
+  while (bcslot* e = my_dirty.pop_front()) {
+      e->lock_buffer();
+      assert(e->flush()); // right now, cannot return a non-success value
+      e->unlock_buffer();
   }
-
+  guard.lock();
   
     // drop clean buffers if requested
     if (drop > 0) {
