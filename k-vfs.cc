@@ -542,10 +542,8 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
 
 // caller should possess file_table_lock
 int init_diskfile_entry(file* file_slot, chkfs_iref ino, int flags) {
-  log_printf("hello1\n");
-  // exception to lock acquisiton here, where vnode comes last, because it doesn't make sense to allocate and
-  // deallocate it (also nothing will contend for it)
-  spinlock_guard guard_file(file_slot->file_lock);
+  // this can acquire locks in a non-standard order because the vnode is not visible to any other threads
+  // until added to the file
   
   // Make vnode
   vnode* chkvn = knew<vnode>(&chk_vops, std::move(ino));
@@ -553,14 +551,37 @@ int init_diskfile_entry(file* file_slot, chkfs_iref ino, int flags) {
   {
     spinlock_guard guard(chkvn->refcount_lock);
     chkvn->refcount = 1;
+    // if OF_TRUNC present on flags (not file_flags):
+    if (flags & OF_TRUNC) {
+      chkvn->ino_->lock_write(); // should not be contended for at this point
+      // mark the inode slot as dirty?
+      chkvn->ino_->slot()->lock_buffer();
+      chkvn->ino_->slot()->unlock_buffer();
+      // mark all associated bufcache slots as dirty
+      chkfs_fileiter it(chkvn->ino_.get());
+      while (it.active()) {
+	bcref bc = it.load();
+	if (bc) {
+	  // pulse the lock to mark dirty
+	  bc->lock_buffer();
+	  bc->unlock_buffer();
+	}
+	it.next();
+      }
+      // set the size to zero
+      chkvn->ino_->size = 0;
+      chkvn->ino_->unlock_write();
+    }
   }
-  
-  file_slot->type = FTYPE_VNODE;
-  file_slot->refcount_ = 0; 
-  file_slot->flags = file_flags;
-  file_slot->off_ = 0;
-  file_slot->vnode_ = chkvn;
-  file_slot->ops = &vn_fops;
+  { 
+    spinlock_guard guard_file(file_slot->file_lock);  
+    file_slot->type = FTYPE_VNODE;
+    file_slot->refcount_ = 0; 
+    file_slot->flags = file_flags;
+    file_slot->off_ = 0;
+    file_slot->vnode_ = chkvn;
+    file_slot->ops = &vn_fops;
+  }
   return 0;
 }
 

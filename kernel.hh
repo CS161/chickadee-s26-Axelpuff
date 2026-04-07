@@ -16,8 +16,10 @@ struct proc_loader;
 struct elf_program;
 #define PROC_RUNNABLE 1
 #define CANARY_VALUE 0x16101610
+#define FD_RESERVED 254  /* currently initializing */
+#define FD_EMPTY 255  /* "this fd slot is empty" */
 #define N_FILEDESC 16 /* size of per-process file descriptor table */
-
+assert(FD_RESERVED >= N_FILEDESC);
 
 // kernel.hh
 //

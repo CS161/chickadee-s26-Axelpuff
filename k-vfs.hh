@@ -9,8 +9,7 @@
 #define N_FILE 128 /* global file system file table count */
 #define KC_FILE_NUM 0
 
-#define FD_EMPTY 255  /* "this fd slot is empty" */
-
+#define FTYPE_RESERVED  -1      /* currently initializing */
 #define	FTYPE_NONE	0	/* not yet initialized */
 #define	FTYPE_VNODE	1	/* file */
 #define	FTYPE_PIPE	2	/* pipe */
