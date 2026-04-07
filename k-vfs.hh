@@ -9,7 +9,6 @@
 #define N_FILE 128 /* global file system file table count */
 #define KC_FILE_NUM 0
 
-#define FTYPE_RESERVED  -1      /* currently initializing */
 #define	FTYPE_NONE	0	/* not yet initialized */
 #define	FTYPE_VNODE	1	/* file */
 #define	FTYPE_PIPE	2	/* pipe */
@@ -146,4 +145,5 @@ int vnode_decref(vnode* vn);
 void init_kc_file(file* kc_file);
 void init_pipe_files(file* read_file, file* write_file);
 int init_memfile_entry(file* file_slot, const char* pathname, int flags);
-int init_diskfile_entry(file* file_slot, chkfs_iref ino, int flags); // maybe needed
+vnode* init_diskfile_vnode(chkfs_iref ino, int flags);
+void init_diskfile_entry(file* file_slot, vnode* chkvn, int flags);

@@ -324,6 +324,7 @@ int chkfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   log_printf("I'm getting a read of size %zu\n", uio->sz);
   log_printf("Offset is %lu\n", uio->off);
   // lock
+  log_printf("locking for read\n");
   vn->ino_->lock_read();
   size_t sz = vn->ino_->size; // ??? is vn->ino_->size the right thing?
   // bcslot* slot = vn->ino_->slot(); 
@@ -332,6 +333,7 @@ int chkfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   vn->refcount_lock.unlock(irqs);
   // read from relevant location in file (return 0 if past end)
   if (static_cast<size_t>(uio->off) >= sz) {
+    vn->ino_->unlock_read(); // ouch this was missing
     return 0;
   }
 
@@ -366,6 +368,7 @@ int chkfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   // memcpy(uio->buf, reinterpret_cast<char *>(start_copy), read_sz);
   // unlock
   vn->ino_->unlock_read();
+  log_printf("unlocked read\n");
   // return amount read
   // (this will not get reflected in the file struct `off` if it is at the end of the
   // file and reads less than the intended amount, but this has no functional effect)
@@ -540,48 +543,51 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
   return 0;
 }
 
-// caller should possess file_table_lock
-int init_diskfile_entry(file* file_slot, chkfs_iref ino, int flags) {
+// might block
+vnode* init_diskfile_vnode(chkfs_iref ino, int flags) {
+  // Make vnode
+  // No vnode lock usage since vnode SHOULD NOT BE VISIBLE to other threads
+  vnode* chkvn = knew<vnode>(&chk_vops, std::move(ino));
+  chkvn->refcount = 1;
+  // if OF_TRUNC present on flags (not file_flags):
+  if (flags & OF_TRUNC) {
+    assert(!chkvn->ino_->is_write_locked());
+    chkvn->ino_->lock_write(); // should not be contended for at this point
+    // mark the inode slot as dirty?
+    chkvn->ino_->slot()->lock_buffer();
+    chkvn->ino_->slot()->unlock_buffer();
+    // mark all associated bufcache slots as dirty
+    chkfs_fileiter it(chkvn->ino_.get());
+    while (it.active()) {
+      bcref bc = it.load();
+      if (bc) {
+	// pulse the lock to mark dirty
+	bc->lock_buffer();
+	bc->unlock_buffer();
+      }
+      it.next();
+    }
+    // set the size to zero
+    chkvn->ino_->size = 0;
+    chkvn->ino_->unlock_write();
+  }
+  return chkvn;
+}
+
+// caller should not hold any locks
+// `f` should not be visible to any other threads
+void init_diskfile_entry(file* f, vnode* chkvn, int flags) {
   // this can acquire locks in a non-standard order because the vnode is not visible to any other threads
   // until added to the file
-  
-  // Make vnode
-  vnode* chkvn = knew<vnode>(&chk_vops, std::move(ino));
   int file_flags = ((flags & OF_READ) ? FREAD : 0) | ((flags & OF_WRITE) ? FWRITE : 0);
-  {
-    spinlock_guard guard(chkvn->refcount_lock);
-    chkvn->refcount = 1;
-    // if OF_TRUNC present on flags (not file_flags):
-    if (flags & OF_TRUNC) {
-      chkvn->ino_->lock_write(); // should not be contended for at this point
-      // mark the inode slot as dirty?
-      chkvn->ino_->slot()->lock_buffer();
-      chkvn->ino_->slot()->unlock_buffer();
-      // mark all associated bufcache slots as dirty
-      chkfs_fileiter it(chkvn->ino_.get());
-      while (it.active()) {
-	bcref bc = it.load();
-	if (bc) {
-	  // pulse the lock to mark dirty
-	  bc->lock_buffer();
-	  bc->unlock_buffer();
-	}
-	it.next();
-      }
-      // set the size to zero
-      chkvn->ino_->size = 0;
-      chkvn->ino_->unlock_write();
-    }
+    { 
+    spinlock_guard guard_file(f->file_lock);  
+    f->type = FTYPE_VNODE;
+    f->refcount_ = 0; 
+    f->flags = file_flags;
+    f->off_ = 0;
+    f->vnode_ = chkvn;
+    f->ops = &vn_fops;
   }
-  { 
-    spinlock_guard guard_file(file_slot->file_lock);  
-    file_slot->type = FTYPE_VNODE;
-    file_slot->refcount_ = 0; 
-    file_slot->flags = file_flags;
-    file_slot->off_ = 0;
-    file_slot->vnode_ = chkvn;
-    file_slot->ops = &vn_fops;
-  }
-  return 0;
 }
 

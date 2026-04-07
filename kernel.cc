@@ -409,7 +409,7 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_CLOSE: {
     spinlock_guard guard(fd_table_lock);
     int fd = regs->reg_rdi;
-    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY || fd_table[fd] == FD_RESERVED) {
+    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
       return E_BADF;
     }
     return close_fd(fd, fd_table); // this should just be 0 since right now close_fd always returns 0
@@ -472,7 +472,6 @@ uintptr_t proc::syscall(regstate* regs) {
     if (oldfd < 0
 	|| oldfd >= N_FILEDESC
 	|| fd_table[oldfd] == FD_EMPTY
-	|| fd_table[oldfd] == FD_RESERVED
 	|| newfd < 0
 	|| newfd >= N_FILEDESC) {
       return E_BADF;
@@ -506,44 +505,41 @@ uintptr_t proc::syscall(regstate* regs) {
     if (!ino) {
       return E_NOENT;
     }
-    // ??????????
-    // ino->lock_write();
+
+    // Make vnode
+    vnode* vn = init_diskfile_vnode(std::move(ino), flags);
     
     // Find fd
     int fd = -1;
     spinlock_guard guard(fd_table_lock);
     for (int i = 0; i < N_FILEDESC; i++) {
       if (fd_table[i] == FD_EMPTY) {
-	fd_table[i] = FD_RESERVED;
 	fd = i;
 	break;
       }
     }
     if (fd == -1) {
+      delete vn;
       return E_MFILE;
     }
 
     // find free file table entry
     int fileid = -1;
-    {
-      spinlock_guard guard_file(file_table_lock);
-      for (int i = 0; i < N_FILE; i++) {
-	if (file_table[i].type == FTYPE_NONE) {
-	  file_table[i].type = FTYPE_RESERVED;
-	  fileid = i;
-	  break;
-	}
+    spinlock_guard guard_file(file_table_lock);
+    for (int i = 0; i < N_FILE; i++) {
+      if (file_table[i].type == FTYPE_NONE) {
+	fileid = i;
+	break;
       }
-      if (fileid == -1) {
-	return E_NFILE;
-      }
+    }
+    if (fileid == -1) {
+      delete vn;
+      return E_NFILE;
     }
 
-    int err = init_diskfile_entry(&file_table[fileid], std::move(ino), flags); //init_memfile_entry(&file_table[fileid], pathname, flags);
-    if (err < 0) {
-      return err;
-    }
-    // !!! todo: abstract this into a functino since I keep forgetting to do incref
+    init_diskfile_entry(&file_table[fileid], vn, flags);
+    
+    // ??? maybe: abstract this into a function since I keep forgetting to do incref
     fd_table[fd] = fileid;
     file_incref(&file_table[fileid]);
     return fd;
@@ -938,10 +934,7 @@ int proc::syscall_fork(regstate* regs) {
   spinlock_guard guard(fd_table_lock);
   for (int i = 0; i < N_FILEDESC; i++) {
     p->fd_table[i] = fd_table[i];
-    // Design decision: just ignore partially loaded FDs from other threads
-    if (p->fd_table[i] == FD_RESERVED) {
-      p->fd_table[i] = FD_EMPTY;
-    } else if (p->fd_table[i] != FD_EMPTY) {
+    if (p->fd_table[i] != FD_EMPTY) {
       spinlock_guard guard_f(file_table_lock);
       file_incref(&file_table[fd_table[i]]);
       // log_printf("ok: %i\n", i);
@@ -1001,7 +994,7 @@ void proc::syscall_exit(regstate* regs) {
       // decrement fds
       spinlock_guard guard_f(fd_table_lock);
       for (int i = 0; i < N_FILEDESC; i++) {
-	if (fd_table[i] != FD_EMPTY && fd_table[i] != FD_RESERVED) {
+	if (fd_table[i] != FD_EMPTY) {
 	  close_fd(i, fd_table);
 	}
       }
@@ -1060,14 +1053,14 @@ uintptr_t proc::syscall_read(regstate* regs) {
   {
     spinlock_guard guard(fd_table_lock);  
     // Check that fd is valid
-    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY || fd_table[fd] == FD_RESERVED) {
+    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
       return E_BADF;
     }
   
     spinlock_guard guard_file(file_table_lock);
     f = &(file_table[fd_table[fd]]);
     irqs = f->file_lock.lock();
-    if (f->type == FTYPE_NONE || f->type == FTYPE_RESERVED) {
+    if (f->type == FTYPE_NONE) {
       f->file_lock.unlock(irqs);
       return E_BADF;
     }
@@ -1106,14 +1099,14 @@ uintptr_t proc::syscall_write(regstate* regs) {
   {
     spinlock_guard guard(fd_table_lock);
     // Check that fd is valid
-    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY || fd_table[fd] == FD_RESERVED) {
+    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
       return E_BADF;
     }
   
     spinlock_guard guard_file(file_table_lock);
     f = &(file_table[fd_table[fd]]);
     irqs = f->file_lock.lock();
-    if (f->type == FTYPE_NONE || f->type == FTYPE_RESERVED) {
+    if (f->type == FTYPE_NONE) {
       f->file_lock.unlock(irqs);
       return E_BADF;
     }
