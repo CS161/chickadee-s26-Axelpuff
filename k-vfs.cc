@@ -415,14 +415,17 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
     if (!e) {
       // allocate a new block. For now 1 at a time
       auto bn = chkfsstate::get().allocate_extent(1);
-      assert(bn > 0); // !!! proper error handling
+      assert(bn < chkfs::blocknum_t(E_MINERROR)); // !!! proper error handling
       // add block at current extent (current iterator location)
       int success = it.insert(bn);
       assert(success == 0);
       // try loading again
       e = it.load();
+      assert(e);
+      e->lock_buffer();
+      memset(e->buf_, 0, chkfs::blocksize);
+      e->unlock_buffer();
     }
-    assert(e);
     log_printf("writing at %lu off\n", off);
     e->lock_buffer(); // no deadlock risk I think?
     unsigned b = it.block_relative_offset();
@@ -450,6 +453,9 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
     //   break;
     // }
   }
+
+  vn->ino_->slot()->lock_buffer();
+  vn->ino_->slot()->unlock_buffer();
  
   vn->ino_->unlock_write();
   return uio->sz;

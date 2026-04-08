@@ -8,16 +8,26 @@ bufcache::bufcache() {
 }
 
 // Caller MUST HOLD bc->lock_!!!
-size_t evict_unrefd_block(bufcache *bc) {
+size_t evict_unrefd_block(bufcache *bc, irqstate &irqs) {
   assert(bc->lock_.is_locked());
+  int found_dirty = -1;
   for (size_t i = bufcache::nslots - 1; i != size_t(-1); --i) {
     spinlock_guard guard(bc->slots_[i].lock_);    // needed in case we `clear()`
-    if (bc->slots_[i].ref_ == 0 && bc->slots_[i].state_ == bcslot::s_clean) {
-      bc->slots_[i].clear();
-      return i;
+    if (bc->slots_[i].ref_ == 0) {
+      if (bc->slots_[i].state_ == bcslot::s_clean) {
+	bc->slots_[i].clear();
+	return i;
+      }
+      found_dirty = i;
     }
   }
-  return size_t(-1);
+  if (found_dirty == -1) {
+    return size_t(-1);
+  }
+  bc->lock_.unlock(irqs);
+  bc->sync(1);
+  irqs = bc->lock_.lock();
+  return found_dirty;
 }
 
 // bufcache::load(bn, cleaner)
@@ -49,7 +59,7 @@ bcref bufcache::load(chkfs::blocknum_t bn, block_clean_function cleaner) {
     // if not found, use free slot
     if (i == nslots) {
       if (empty_slot == size_t(-1)) {
-	  empty_slot = evict_unrefd_block(this);
+	empty_slot = evict_unrefd_block(this, irqs);
 	  if (empty_slot == size_t(-1)) {
             // cache full!
             lock_.unlock(irqs);
@@ -140,6 +150,9 @@ bool bcslot::load(irqstate& irqs, block_clean_function cleaner) {
 bool bcslot::flush() {
   sata_disk->write(buf_, chkfs::blocksize,
 		  bn_ * chkfs::blocksize);
+  if (dirty_links_.is_linked()) { // for some reason not totally coinciding with it being dirty??
+    dirty_links_.erase();
+  }
   state_ = s_clean;
   return true;
 }
@@ -163,18 +176,20 @@ void bcslot::decrement_reference_count() {
 //    with no spinlocks held.
 
 void bcslot::lock_buffer() {
-    spinlock_guard guard_dirty(bufcache::get().lock_); // I think this is necessary to protect dirty_list
     spinlock_guard guard(lock_);
+    if(!(state_ == s_clean || state_ == s_dirty)) {
+      int s = state_;
+      log_printf("state: %i\n", s);
+    }
     assert(state_ == s_clean || state_ == s_dirty);
     assert(buf_owner_ != current());
     while (buf_owner_) {
-        guard_dirty.unlock();
-        guard.unlock();
-        current()->yield();
-	guard_dirty.lock();
-        guard.lock();
+      guard.unlock();
+      current()->yield();
+      guard.lock();
     }
     buf_owner_ = current();
+    spinlock_guard guard_dirty(bufcache::get().lock_);
     if (dirty_links_.is_linked()) { // for some reason not totally coinciding with it being dirty??
       dirty_links_.erase();
     }
@@ -206,12 +221,14 @@ int bufcache::sync(int drop) {
   my_dirty.swap(dirty_list_);
   guard.unlock();
   while (bcslot* e = my_dirty.pop_front()) {
-      e->lock_buffer();
-      assert(e->flush()); // right now, cannot return a non-success value
-      e->unlock_buffer();
+    log_printf("before locking %zu...\n", e->bn_);
+    e->lock_buffer();
+    log_printf("after locking %zu...\n", e->bn_);
+    assert(e->flush()); // right now, cannot return a non-success value
+    e->unlock_buffer();
   }
   guard.lock();
-  
+    
     // drop clean buffers if requested
     if (drop > 0) {
         // spinlock_guard guard(lock_);
@@ -423,6 +440,7 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
 
     // Look for a large enough extent using the free bit block
     auto fbb_slot = bc.load(sb.fbb_bn);
+    superblock_slot.release(); // needed?
     // it's buf_, right?
     bitset_view fbb_view = bitset_view(reinterpret_cast<uint64_t*>(fbb_slot->buf_), chkfs::bitsperblock);
     size_t start_extent = fbb_view.find_lsb();
@@ -451,9 +469,11 @@ auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
     assert(fbb_view[start_extent] == 1);
     assert(fbb_view[start_extent + count - 1] == 1);
     // Claim blocks
+    fbb_slot->lock_buffer();
     for (size_t i = 0; i < count; i++) {
       fbb_view[start_extent + i] = 0;
     }
+    fbb_slot->unlock_buffer();
     assert(fbb_view[start_extent] == 0);
     assert(fbb_view[start_extent + count - 1] == 0);
     
