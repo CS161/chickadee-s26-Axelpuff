@@ -1168,37 +1168,68 @@ uintptr_t proc::syscall_readdiskfile(regstate* regs) {
   return nread;
 }
 
-ssize_t syscall_lseek(regstate* regs) {
+ssize_t proc::syscall_lseek(regstate* regs) {
   int fd = regs->reg_rdi;
   off_t off = regs->reg_rsi;
   int whence = regs->reg_rdx;
 
+  // file-getting boilerplate
   file* f;
   irqstate irqs;  
-  {
-    spinlock_guard guard(fd_table_lock);  
-    // Check that fd is valid
-    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
-      return E_BADF;
-    }
-  
-    spinlock_guard guard_file(file_table_lock);
-    f = &(file_table[fd_table[fd]]);
-    irqs = f->file_lock.lock();
-    if (f->type == FTYPE_NONE) {
-      f->file_lock.unlock(irqs);
-      return E_BADF;
-    }
-    // file_seek() MUST unlock file_lock once it has obtained its next lock
+  spinlock_guard guard_fdtable(fd_table_lock);  
+  // Check that fd is valid
+  if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+    return E_BADF;
   }
-  // even though file_lock.lock() (with irq), we need to manually disable interrupts
-  // since the guards going out of scope above re-enable interrupts 
-  cli();
-  off_t seek_off = file_seek(f, reinterpret_cast<char*>(addr), sz, irqs);
-  return n_read;
-
-
-  return static_cast<ssize_t>(...);
+  
+  spinlock_guard guard_ftable(file_table_lock);
+  f = &(file_table[fd_table[fd]]);
+  spinlock_guard guard_file(f->file_lock);    
+  if (f->type == FTYPE_NONE) {
+    return E_BADF;
+  }
+  guard_fdtable.unlock();
+  guard_ftable.unlock();
+  
+  off_t sz = f->size_;
+  off_t cur = f->off_;
+  
+  if (sz < 0) {
+    return sz; // an error code
+  }
+  
+  switch (whence) {
+  case LSEEK_SET: {
+    break;
+  }
+  case LSEEK_CUR: {
+    if (MAX_OFF_T - cur < off) {
+      return E_RANGE;
+    }
+    off += cur;
+    break;
+  }
+  case LSEEK_END: {
+    if (MAX_OFF_T - sz < off) {
+      return E_RANGE;
+    }
+    off += sz;
+    break;
+  }
+  case LSEEK_SIZE: { 
+    return sz;
+  }
+  default:{
+    return E_INVAL;    
+  }
+  }
+  
+  if (off < 0) {
+    return E_INVAL;
+  }
+  
+  f->off_ = off;
+  return static_cast<ssize_t>(off);
 }
 
 

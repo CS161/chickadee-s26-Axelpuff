@@ -1,6 +1,5 @@
 #include "k-vfs.hh"
 #include "k-devices.hh"
-#include <limits>
 
 // k-vfs.cc
 //
@@ -62,9 +61,6 @@ int vnode_fops::fo_decref(file* f) const {
   return f->refcount_; 
 }
 
-const off_t MAX_OFF_T = std::numeric_limits<off_t>::max();
-const off_t MAX_SZ_T = std::numeric_limits<size_t>::max();
-
 int vnode_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
   assert(f->file_lock.is_locked());
   // Lock handoff
@@ -76,7 +72,7 @@ int vnode_fops::fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const {
     return E_BADF;
   }
   assert(MAX_OFF_T - static_cast<off_t>(sz) > f->off_);
-  
+
   uio arg;
   arg.off = f->off_;
   f->off_ += sz;
@@ -100,52 +96,20 @@ int vnode_fops::fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const {
   uio arg;
   arg.off = f->off_;
   f->off_ += sz;
+  f->size_ = max(f->size_, f->off_); // lazy solution that doesn't account for that fancy null region stuff. but this is here because the disk write requires not holding a spinlock, so I can't go backwards and update the size and offset with the results of `vop_write` unless the file lock is reobtained after writing, because (assuming we let go of the inode lock to avoid deadlock) the file could have been modified or erased by some other thread in the meantime...
+  log_printf("Writing on file level\n");
+  log_printf("New off: %zu\n", f->off_);
+  log_printf("New size: %zu\n", f->size_);
   arg.buf = buf;
   arg.sz = sz;
   return f->vnode_->ops->vop_write(f->vnode_, &arg, vn_irqs);
 }
 
 
-off_t vnode_fops::fo_seek(file* f, off_t off, int whence, irqstate &irqs) const {
-  assert(f->file_lock.is_locked());
-  auto vn_irqs = f->vnode_->refcount_lock.lock();
-  off_t sz = vnode_getsize(f->vnode_);
-  
-  if (!f->vnode_->seekable) {
-    f->vnode_->refcount_lock.unlock(vn_irqs);
-    return E_SPIPE;
-  }
-  
-  switch (whence) {
-  case LSEEK_SET: {
-    f->off_ = off;
-    break;
-  }
-  case LSEEK_CUR: {
-    if (MAX_OFF_T - off < f->off_) {
-      return E_RANGE;
-    }
-    f->off_ += off;
-    break;
-  }
-  case LSEEK_END: {
-    if (MAX_OFF_T - off < sz) {
-      return E_RANGE;
-    }
-    f->off_ = sz + off;
-    break;
-  }
-  case LSEEK_SIZE: { 
-    f->vnode_->refcount_lock.unlock(vn_irqs);
-    return vnode_getsize(f->vnode_);
-  }
-  default:
-    f->vnode_->refcount_lock.unlock(vn_irqs);
-    return E_INVAL;    
-  }
-  f->vnode_->refcount_lock.unlock(vn_irqs);
-  return f->off_;
-}
+// off_t vnode_fops::fo_seek(file* f, off_t off, int whence, irqstate &irqs) const {
+//   assert(f->file_lock.is_locked());
+//   auto vn_irqs = f->vnode_->refcount_lock.lock();
+// }
 
 int pipe_fops::fo_decref(file* f) const {
   assert(f->refcount_ > 0);
@@ -290,9 +254,9 @@ int kcfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   return n;
 }
 
-off_t kcfs_vops::vop_getsize(vnode* vn) const {
-  assert(false); // should not be called
-}
+// off_t kcfs_vops::vop_getsize(vnode* vn) const {
+//   assert(false); // should not be called
+// }
 
 // memf_vops (memfile vnode functions)
 
@@ -359,17 +323,17 @@ int memf_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   return uio->sz;
 }
 
-off_t memf_vops::vop_getsize(vnode* vn) const {
-  auto init_irqs = memfile::initfs_lock.lock();
-  // find memfile
-  assert(vn->mindex >= 0);
-  memfile* m = &(memfile::initfs[vn->mindex]);
-  // get memfile lock
-  spinlock_guard guard(m->lock_);
-  off_t len = static_cast<off_t>(m->len_);
-  memfile::initfs_lock.unlock(init_irqs);
-  return len;
-}
+// off_t memf_vops::vop_getsize(vnode* vn) const {
+//   auto init_irqs = memfile::initfs_lock.lock();
+//   // find memfile
+//   assert(vn->mindex >= 0);
+//   memfile* m = &(memfile::initfs[vn->mindex]);
+//   // get memfile lock
+//   spinlock_guard guard(m->lock_);
+//   off_t len = static_cast<off_t>(m->len_);
+//   memfile::initfs_lock.unlock(init_irqs);
+//   return len;
+// }
 
 
 // chkfs_vops (chickadee disk file system vnode functions)
@@ -401,6 +365,7 @@ int chkfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   while (nread < uio->sz) {
     // copy data from current block
     if (auto e = it.find(off).load()) {
+      log_printf("reading in block starting at %lu offset\n", off);
       unsigned b = it.block_relative_offset();
       size_t ncopy = min(
 			 size_t(vn->ino_->size - it.offset()),   // bytes left in file
@@ -436,7 +401,9 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
     vn->ino_->unlock_write();
     return E_NOSPC;
   }
-
+  log_printf("File size is %lu\n", vn->ino_->size);
+  log_printf("Target offset is %lu\n", uio->off);
+  
   // write to relevant location in file
   chkfs_fileiter it(vn->ino_.get());
   
@@ -445,10 +412,11 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   while (nwrite < uio->sz) {
     // copy data from current block
     if (auto e = it.find(off).load()) {
+      assert(e);
+      log_printf("writing at %lu off\n", off);
       e->lock_buffer(); // no deadlock risk I think?
       unsigned b = it.block_relative_offset();
       size_t ncopy = min(
-			 size_t(vn->ino_->size - it.offset()),   // bytes left in file
 			 chkfs::blocksize - b,              // bytes left in block
 			 uio->sz - nwrite                         // bytes left in request
 			 );
@@ -457,9 +425,14 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
       
       nwrite += ncopy;
       off += ncopy;
+      log_printf("off: %lu\n", off);
+      if (off > vn->ino_->size) {
+	log_printf("expanded buffer to %lu bytes\n", off);
+	vn->ino_->size = off;
+      }
       // not implemented yet (write past end of file, write past end of block)
-      assert(size_t(vn->ino_->size - it.offset()) != 0);
-      assert(chkfs::blocksize - b != 0);
+      // assert(size_t(vn->ino_->size - it.offset()) != 0);
+      // assert(chkfs::blocksize - b != 0);
       if (ncopy == 0) { // ??? does this do the intended behavior here? why did this work for writes in the first place?
 	break;
       }
@@ -472,13 +445,13 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   return uio->sz;
 }
 
-off_t chkfs_vops::vop_getsize(vnode* vn, irqstate &irqs) const {
-  vn->ino_->lock_read();
+// off_t chkfs_vops::vop_getsize(vnode* vn, irqstate &irqs) const {
+//   vn->ino_->lock_read();
   
-  size_t sz = static_cast<off_t>(vn->ino_->size);
-  vn->ino->unlock_read();
-  return sz;
-}
+//   size_t sz = static_cast<off_t>(vn->ino_->size);
+//   vn->ino->unlock_read();
+//   return sz;
+// }
 
 file file_table[N_FILE];
 spinlock file_table_lock;
@@ -507,9 +480,9 @@ int file_write(file* f, char* buf, size_t sz, irqstate &irqs) {
   return f->ops->fo_write(f, buf, sz, irqs);  
 }
 
-off_t file_seek(file* f, off_t off, int whence, irqstate &irqs) {
-  return f->ops->fo_seek(f, off, whence, irqs);  
-}
+// off_t file_seek(file* f, off_t off, int whence, irqstate &irqs) {
+//   return f->ops->fo_seek(f, off, whence, irqs);  
+// }
 
 int vnode_incref(vnode* vn) {
   spinlock_guard guard(vn->refcount_lock);
@@ -521,9 +494,9 @@ int vnode_decref(vnode* vn) {
   return vn->ops->vop_decref(vn);
 }
 
-off_t vnode_getsize(vnode* vn) {
-  return vn->ops->vop_getsize(vn);
-}
+// off_t vnode_getsize(vnode* vn) {
+//   return vn->ops->vop_getsize(vn);
+// }
 
 void init_kc_file(file* kc_file) {
   // set up keyboard/console vnode
@@ -538,6 +511,7 @@ void init_kc_file(file* kc_file) {
     kc_file->refcount_ = 0; 
     kc_file->flags = FREAD | FWRITE;
     kc_file->off_ = 0;
+    kc_file->size_ = E_SPIPE;
     kc_file->vnode_ = kcvn;
     kc_file->ops = &vn_fops;
   }
@@ -552,6 +526,7 @@ void init_pipe_files(file* read_file, file* write_file) {
     read_file->type = FTYPE_PIPE;
     read_file->refcount_ = 0; 
     read_file->flags = FREAD;
+    read_file->size_ = E_SPIPE;
     read_file->pipe_ = pipe;
     read_file->ops = &p_fops;
   }
@@ -560,6 +535,7 @@ void init_pipe_files(file* read_file, file* write_file) {
     write_file->type = FTYPE_PIPE;
     write_file->refcount_ = 0; 
     write_file->flags = FWRITE;
+    write_file->size_ = E_SPIPE;
     write_file->pipe_ = pipe;
     write_file->ops = &p_fops;
   }
@@ -585,6 +561,7 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
   if (flags & OF_TRUNC) {
     m->set_length(0);
   }
+  size_t sz = m->len_;
 
   // Make vnode
   vnode* mfvn = knew<vnode>(&mf_vops);
@@ -599,6 +576,7 @@ int init_memfile_entry(file* file_slot, const char* pathname, int flags) {
   file_slot->refcount_ = 0; 
   file_slot->flags = file_flags;
   file_slot->off_ = 0;
+  file_slot->size_ = sz;
   file_slot->vnode_ = mfvn;
   file_slot->ops = &vn_fops;
   return 0;
@@ -610,7 +588,7 @@ vnode* init_diskfile_vnode(chkfs_iref ino, int flags) {
   // No vnode lock usage since vnode SHOULD NOT BE VISIBLE to other threads
   vnode* chkvn = knew<vnode>(&chk_vops, std::move(ino));
   chkvn->refcount = 1;
-  chkvn->seekable = 1;
+  // chkvn->seekable = 1;
   // if OF_TRUNC present on flags (not file_flags):
   if (flags & OF_TRUNC) {
     assert(!chkvn->ino_->is_write_locked());
@@ -640,6 +618,7 @@ vnode* init_diskfile_vnode(chkfs_iref ino, int flags) {
 // `f` should not be visible to any other threads
 void init_diskfile_entry(file* f, vnode* chkvn, int flags) {
   // this can acquire locks in a non-standard order because the vnode is not visible to any other threads
+  size_t sz = chkvn->ino_->size;
   // until added to the file
   int file_flags = ((flags & OF_READ) ? FREAD : 0) | ((flags & OF_WRITE) ? FWRITE : 0);
     { 
@@ -648,6 +627,7 @@ void init_diskfile_entry(file* f, vnode* chkvn, int flags) {
     f->refcount_ = 0; 
     f->flags = file_flags;
     f->off_ = 0;
+    f->size_ = sz;
     f->vnode_ = chkvn;
     f->ops = &vn_fops;
   }
