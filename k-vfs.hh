@@ -41,6 +41,7 @@ struct uio { /* "user input output"? maybe? */
 
 struct vnode {
   int refcount;
+  int seekable = 0;
   spinlock refcount_lock;
 
   int mindex = -1;
@@ -83,7 +84,7 @@ struct file_ops {
   virtual int fo_decref(file* f) const = 0;
   virtual int fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const = 0;
   virtual int fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const = 0;
-  virtual off_t fo_seek(file* f, off_t off, int whence) const = 0;
+  virtual off_t fo_seek(file* f, off_t off, int whence, irqstate &irqs) const = 0;
 };
 
 struct vnode_ops {
@@ -94,6 +95,7 @@ struct vnode_ops {
   virtual int vop_decref(vnode* vn) const = 0;
   virtual int vop_read(vnode* vn, uio* uio, irqstate &irqs) const = 0;
   virtual int vop_write(vnode* vn, uio* uio, irqstate &irqs) const = 0;
+  virtual off_t vop_getsize(vnode* vn, irqstate &irqs) const = 0;
 };
 
 extern file file_table[N_FILE];
@@ -103,14 +105,14 @@ struct vnode_fops : public file_ops { // i.e. as opposed to pipe_fops
   int fo_decref(file* f) const override;
   int fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const override;
   int fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const override;
-  off_t fo_seek(file* f, off_t off, int whence) const override;
+  off_t fo_seek(file* f, off_t off, int whence, irqstate &irqs) const override;
 };
 
 struct pipe_fops : public file_ops {
   int fo_decref(file* f) const override;
   int fo_read(file* f, char* buf, size_t sz, irqstate &irqs) const override;
   int fo_write(file* f, char* buf, size_t sz, irqstate &irqs) const override;
-  inline off_t fo_seek(file* f, off_t off, int whence) const override {
+  inline off_t fo_seek(file* f, off_t off, int whence, irqstate &irqs) const override {
     return E_SPIPE;
   }
 };
@@ -119,18 +121,21 @@ struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
   int vop_decref(vnode* vn) const override;
   int vop_read(vnode* vn, uio* uio, irqstate &irqs) const override;  
   int vop_write(vnode* vn, uio* uio, irqstate &irqs) const override;
+  off_t vop_getsize(vnode* vn, irqstate &irqs) const override;
 };
 
 struct memf_vops : public vnode_ops { // memfile
   int vop_decref(vnode* vn) const override;
   int vop_read(vnode* vn, uio* uio, irqstate &irqs) const override;  
   int vop_write(vnode* vn, uio* uio, irqstate &irqs) const override;
+  off_t vop_getsize(vnode* vn, irqstate &irqs) const override;
 };
 
 struct chkfs_vops : public vnode_ops { // chkfs disk file
   int vop_decref(vnode* vn) const override;
   int vop_read(vnode* vn, uio* uio, irqstate &irqs) const override;  
   int vop_write(vnode* vn, uio* uio, irqstate &irqs) const override;
+  off_t vop_getsize(vnode* vn, irqstate &irqs) const override;
 };
 
 extern vnode_fops vn_fops;
@@ -143,9 +148,12 @@ int file_incref(file* f);
 int file_decref(file* f);
 int file_read(file* f, char* buf, size_t sz, irqstate &irqs);
 int file_write(file* f, char* buf, size_t sz, irqstate &irqs);
-
+off_t file_seek(file* f, off_t off, int whence, irqstate &irqs);
+  
 int vnode_incref(vnode* vn);
 int vnode_decref(vnode* vn);
+// getsize should be called with the enclosing file lock held
+off_t vnode_getsize(vnode* vn, irqstate &irqs);
 
 void init_kc_file(file* kc_file);
 void init_pipe_files(file* read_file, file* write_file);

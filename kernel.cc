@@ -392,6 +392,9 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_WRITE:
     return syscall_write(regs);
 
+  case SYSCALL_LSEEK:
+    return syscall_lseek(regs);
+
   case SYSCALL_READDISKFILE:
     return syscall_readdiskfile(regs);
 
@@ -1163,6 +1166,39 @@ uintptr_t proc::syscall_readdiskfile(regstate* regs) {
 
   ino->unlock_read();
   return nread;
+}
+
+ssize_t syscall_lseek(regstate* regs) {
+  int fd = regs->reg_rdi;
+  off_t off = regs->reg_rsi;
+  int whence = regs->reg_rdx;
+
+  file* f;
+  irqstate irqs;  
+  {
+    spinlock_guard guard(fd_table_lock);  
+    // Check that fd is valid
+    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+      return E_BADF;
+    }
+  
+    spinlock_guard guard_file(file_table_lock);
+    f = &(file_table[fd_table[fd]]);
+    irqs = f->file_lock.lock();
+    if (f->type == FTYPE_NONE) {
+      f->file_lock.unlock(irqs);
+      return E_BADF;
+    }
+    // file_seek() MUST unlock file_lock once it has obtained its next lock
+  }
+  // even though file_lock.lock() (with irq), we need to manually disable interrupts
+  // since the guards going out of scope above re-enable interrupts 
+  cli();
+  off_t seek_off = file_seek(f, reinterpret_cast<char*>(addr), sz, irqs);
+  return n_read;
+
+
+  return static_cast<ssize_t>(...);
 }
 
 
