@@ -410,35 +410,45 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   size_t nwrite = 0;
   off_t off = uio->off;
   while (nwrite < uio->sz) {
-    // copy data from current block
-    if (auto e = it.find(off).load()) {
-      assert(e);
-      log_printf("writing at %lu off\n", off);
-      e->lock_buffer(); // no deadlock risk I think?
-      unsigned b = it.block_relative_offset();
-      size_t ncopy = min(
-			 chkfs::blocksize - b,              // bytes left in block
-			 uio->sz - nwrite                         // bytes left in request
-			 );
-      memcpy(e->buf_ + b, uio->buf + nwrite, ncopy);
-      e->unlock_buffer();
+    // get the current block, if it exists
+    auto e = it.find(off).load();
+    if (!e) {
+      // allocate a new block. For now 1 at a time
+      auto bn = chkfsstate::get().allocate_extent(1);
+      assert(bn > 0); // !!! proper error handling
+      // add block at current extent (current iterator location)
+      int success = it.insert(bn);
+      assert(success == 0);
+      // try loading again
+      e = it.load();
+    }
+    assert(e);
+    log_printf("writing at %lu off\n", off);
+    e->lock_buffer(); // no deadlock risk I think?
+    unsigned b = it.block_relative_offset();
+    size_t ncopy = min(
+		       chkfs::blocksize - b,              // bytes left in block
+		       uio->sz - nwrite                         // bytes left in request
+		       );
+    memcpy(e->buf_ + b, uio->buf + nwrite, ncopy);
+    e->unlock_buffer();
       
-      nwrite += ncopy;
-      off += ncopy;
-      log_printf("off: %lu\n", off);
-      if (off > vn->ino_->size) {
-	log_printf("expanded buffer to %lu bytes\n", off);
-	vn->ino_->size = off;
-      }
-      // not implemented yet (write past end of file, write past end of block)
-      // assert(size_t(vn->ino_->size - it.offset()) != 0);
-      // assert(chkfs::blocksize - b != 0);
-      if (ncopy == 0) { // ??? does this do the intended behavior here? why did this work for writes in the first place?
-	break;
-      }
-    } else {
+    nwrite += ncopy;
+    off += ncopy;
+    log_printf("off: %lu\n", off);
+    if (off > vn->ino_->size) {
+      log_printf("expanded buffer to %lu bytes\n", off);
+      vn->ino_->size = off;
+    }
+    // not implemented yet (write past end of file, write past end of block)
+    // assert(size_t(vn->ino_->size - it.offset()) != 0);
+    // assert(chkfs::blocksize - b != 0);
+    if (ncopy == 0) { // ??? does this do the intended behavior here? why did this work for writes in the first place?
       break;
     }
+    // } else {
+    //   break;
+    // }
   }
  
   vn->ino_->unlock_write();

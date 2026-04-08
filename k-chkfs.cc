@@ -415,6 +415,48 @@ chkfs_iref chkfsstate::lookup_inode(const char* filename) {
 //    `blocknum >= blocknum_t(E_MINERROR)`.
 
 auto chkfsstate::allocate_extent(unsigned count) -> blocknum_t {
-    // Your code here
-    return E_INVAL;
+    auto& bc = bufcache::get();
+    auto superblock_slot = bc.load(0);
+    assert(superblock_slot);
+    auto& sb = *reinterpret_cast<chkfs::superblock*>
+        (&superblock_slot->buf_[chkfs::superblock_offset]);
+
+    // Look for a large enough extent using the free bit block
+    auto fbb_slot = bc.load(sb.fbb_bn);
+    // it's buf_, right?
+    bitset_view fbb_view = bitset_view(reinterpret_cast<uint64_t*>(fbb_slot->buf_), chkfs::bitsperblock);
+    size_t start_extent = fbb_view.find_lsb();
+    while (start_extent < fbb_view.size()) {
+      size_t end_extent = start_extent;
+      while (end_extent < fbb_view.size()
+	     && end_extent - start_extent < count
+	     && fbb_view[end_extent] == 1) {
+	end_extent++;
+      }
+      if (end_extent - start_extent == count) {
+	break;
+      }
+      if (end_extent == fbb_view.size()) {
+	start_extent = fbb_view.size();
+      } else {
+	start_extent = fbb_view.find_lsb(end_extent);
+      }
+    }
+    if (start_extent == fbb_view.size()) {
+      fbb_slot.release(); // needed?
+      return E_INVAL;
+    }
+    log_printf("first sufficiently large at %zu\n", start_extent);
+    assert(fbb_view[start_extent - 1] == 0);
+    assert(fbb_view[start_extent] == 1);
+    assert(fbb_view[start_extent + count - 1] == 1);
+    // Claim blocks
+    for (size_t i = 0; i < count; i++) {
+      fbb_view[start_extent + i] = 0;
+    }
+    assert(fbb_view[start_extent] == 0);
+    assert(fbb_view[start_extent + count - 1] == 0);
+    
+    fbb_slot.release(); // needed?
+    return start_extent;
 }
