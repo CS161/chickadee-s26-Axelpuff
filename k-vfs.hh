@@ -165,3 +165,4 @@ void init_pipe_files(file* read_file, file* write_file);
 int init_memfile_entry(file* file_slot, const char* pathname, int flags);
 vnode* init_diskfile_vnode(chkfs_iref ino, int flags);
 void init_diskfile_entry(file* file_slot, vnode* chkvn, int flags);
+chkfs_iref init_regular_inode(const char* filename);

@@ -648,3 +648,70 @@ void init_diskfile_entry(file* f, vnode* chkvn, int flags) {
     f->ops = &vn_fops;
   }
 }
+
+chkfs::blocknum_t find_inode_block_regular() {
+    auto& bc = bufcache::get();
+    auto superblock_slot = bc.load(0);
+    assert(superblock_slot);
+    auto& sb = *reinterpret_cast<chkfs::superblock*>
+        (&superblock_slot->buf_[chkfs::superblock_offset]);
+
+    for (chkfs::inum_t inum = 1; inum < sb.ninodes; inum++) {
+      auto bn = sb.inode_bn + inum / chkfs::inodesperblock;
+      // I don't know what clean_inode_block is
+      auto inode_slot = bc.load(bn); // , chkfsstate::get().clean_inode_block);
+      auto iarray = reinterpret_cast<chkfs::inode*>(inode_slot->buf_);
+      if (iarray[inum].type == 0) {
+	  inode_slot->lock_buffer();
+	  iarray[inum].type = chkfs::type_regular;
+	  iarray[inum].size = 0;
+	  iarray[inum].nlink = 1; // assume immediate linkage
+	  inode_slot->unlock_buffer();
+	  inode_slot.release(); // the `chkfs_iref` claims the reference
+	  return inum;
+      }
+    }
+    return E_NOSPC;
+}
+
+chkfs_iref init_regular_inode(const char* filename) {
+  chkfs::blocknum_t new_inum = find_inode_block_regular();
+  assert(new_inum < chkfs::blocknum_t(E_MINERROR));
+  
+  auto dirino = chkfsstate::get().inode(1);
+  dirino->lock_write();
+  chkfs_fileiter it(dirino.get());
+  size_t diroff = 0;
+  while (true) {
+    auto e = it.find(diroff).load();
+    if (!e) {
+      // !!! eventually refactor this (duplicated from elsewhere)
+      // allocate a new block. For now 1 at a time
+      auto bn = chkfsstate::get().allocate_extent(1);
+      assert(bn < chkfs::blocknum_t(E_MINERROR)); // !!! proper error handling
+      // add block at current extent (current iterator location)
+      int success = it.insert(bn);
+      assert(success == 0);
+      // try loading again
+      e = it.load();
+      assert(e);
+      e->lock_buffer();
+      memset(e->buf_, 0, chkfs::blocksize);
+      dirino->size += chkfs::blocksize;
+      e->unlock_buffer();
+    }
+    size_t bsz = min(dirino->size - diroff, chkfs::blocksize);
+    auto dirent = reinterpret_cast<chkfs::dirent*>(e->buf_);
+    for (size_t pos = 0; pos < bsz; pos += chkfs::direntsize, ++dirent) {
+      if (dirent->inum == 0) {
+	e->lock_buffer();
+	dirent->inum = new_inum;
+	strncpy(dirent->name, filename, chkfs::maxnamelen + 1);
+	e->unlock_buffer();
+	dirino->unlock_write();
+	return chkfsstate::get().inode(new_inum);
+      }
+    }
+    diroff += chkfs::blocksize;
+  }
+}

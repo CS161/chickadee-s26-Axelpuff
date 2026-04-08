@@ -506,7 +506,12 @@ uintptr_t proc::syscall(regstate* regs) {
     // !!! IMPLIES FILE CREATION NOT SUPPORTED (true rn)
     auto ino = chkfsstate::get().lookup_inode(pathname);
     if (!ino) {
-      return E_NOENT;
+      if (flags & OF_CREATE) {
+	ino = init_regular_inode(pathname);
+      }
+      if (!ino) {
+	return E_NOENT;
+      }
     }
 
     // Make vnode
