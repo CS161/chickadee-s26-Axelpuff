@@ -391,6 +391,25 @@ int chkfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
   log_printf("Returned size: %zu\n", nread);
   return nread;
 }
+
+// allocate an extent at the current location of `it`, using `e` to store the bcref
+int allocate_new_extent(chkfs_fileiter& it, bcref& e) {
+  // allocate a new block. For now 1 at a time
+  auto bn = chkfsstate::get().allocate_extent(1);
+  if (bn < chkfs::blocknum_t(E_MINERROR)) {
+    return static_cast<int>(bn); // note that this is implementation specific (two's complement)
+  }
+  // add block at current extent (current iterator location)
+  int success = it.insert(bn);
+  assert(success == 0);
+  // try loading again
+  e = it.load();
+  assert(e);
+  e->lock_buffer();
+  memset(e->buf_, 0, chkfs::blocksize);
+  e->unlock_buffer();
+  return 0;
+}
   
 int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
   log_printf("I'm getting a write of size %zu\n", uio->sz);
@@ -413,18 +432,12 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
     // get the current block, if it exists
     auto e = it.find(off).load();
     if (!e) {
-      // allocate a new block. For now 1 at a time
-      auto bn = chkfsstate::get().allocate_extent(1);
-      assert(bn < chkfs::blocknum_t(E_MINERROR)); // !!! proper error handling
-      // add block at current extent (current iterator location)
-      int success = it.insert(bn);
-      assert(success == 0);
-      // try loading again
-      e = it.load();
-      assert(e);
-      e->lock_buffer();
-      memset(e->buf_, 0, chkfs::blocksize);
-      e->unlock_buffer();
+      int err = allocate_new_extent(it, e);
+      if (err != 0) {
+	// untested
+	vn->ino_->unlock_write();
+	return nwrite;
+      }
     }
     log_printf("writing at %lu off\n", off);
     e->lock_buffer(); // no deadlock risk I think?
@@ -674,7 +687,7 @@ chkfs::blocknum_t find_inode_block_regular() {
     return E_NOSPC;
 }
 
-chkfs_iref init_regular_inode(const char* filename) {
+int init_regular_inode(const char* filename) {
   chkfs::blocknum_t new_inum = find_inode_block_regular();
   assert(new_inum < chkfs::blocknum_t(E_MINERROR));
   
@@ -685,20 +698,11 @@ chkfs_iref init_regular_inode(const char* filename) {
   while (true) {
     auto e = it.find(diroff).load();
     if (!e) {
-      // !!! eventually refactor this (duplicated from elsewhere)
-      // allocate a new block. For now 1 at a time
-      auto bn = chkfsstate::get().allocate_extent(1);
-      assert(bn < chkfs::blocknum_t(E_MINERROR)); // !!! proper error handling
-      // add block at current extent (current iterator location)
-      int success = it.insert(bn);
-      assert(success == 0);
-      // try loading again
-      e = it.load();
-      assert(e);
-      e->lock_buffer();
-      memset(e->buf_, 0, chkfs::blocksize);
+      int err = allocate_new_extent(it, e);
+      if (err != 0) {
+	return err;
+      }
       dirino->size += chkfs::blocksize;
-      e->unlock_buffer();
     }
     size_t bsz = min(dirino->size - diroff, chkfs::blocksize);
     auto dirent = reinterpret_cast<chkfs::dirent*>(e->buf_);
@@ -709,7 +713,8 @@ chkfs_iref init_regular_inode(const char* filename) {
 	strncpy(dirent->name, filename, chkfs::maxnamelen + 1);
 	e->unlock_buffer();
 	dirino->unlock_write();
-	return chkfsstate::get().inode(new_inum);
+	return 0;
+	//return chkfsstate::get().inode(new_inum);
       }
     }
     diroff += chkfs::blocksize;

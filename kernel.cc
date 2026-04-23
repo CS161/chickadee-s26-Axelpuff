@@ -507,7 +507,10 @@ uintptr_t proc::syscall(regstate* regs) {
     auto ino = chkfsstate::get().lookup_inode(pathname);
     if (!ino) {
       if (flags & OF_CREATE) {
-	ino = init_regular_inode(pathname);
+	int err = init_regular_inode(pathname);
+	if (err != 0) {
+	  ino = chkfsstate::get().lookup_inode(pathname);
+	}
       }
       if (!ino) {
 	return E_NOENT;
