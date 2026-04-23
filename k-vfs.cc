@@ -393,21 +393,23 @@ int chkfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
 }
 
 // allocate an extent at the current location of `it`, using `e` to store the bcref
-int allocate_new_extent(chkfs_fileiter& it, bcref& e) {
+int allocate_new_extent(chkfs_fileiter& it, bcref& bcentry) {
   // allocate a new block. For now 1 at a time
   auto bn = chkfsstate::get().allocate_extent(1);
-  if (bn < chkfs::blocknum_t(E_MINERROR)) {
+  if (bn >= chkfs::blocknum_t(E_MINERROR)) {
     return static_cast<int>(bn); // note that this is implementation specific (two's complement)
   }
   // add block at current extent (current iterator location)
   int success = it.insert(bn);
-  assert(success == 0);
+  if (success < 0) {
+    return success;
+  }
   // try loading again
-  e = it.load();
-  assert(e);
-  e->lock_buffer();
-  memset(e->buf_, 0, chkfs::blocksize);
-  e->unlock_buffer();
+  bcentry = it.load();
+  assert(bcentry);
+  bcentry->lock_buffer();
+  memset(bcentry->buf_, 0, chkfs::blocksize);
+  bcentry->unlock_buffer();
   return 0;
 }
   
@@ -434,7 +436,7 @@ int chkfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
     if (!e) {
       int err = allocate_new_extent(it, e);
       if (err != 0) {
-	// untested
+	// untested with hitting real file system limit
 	vn->ino_->unlock_write();
 	return nwrite;
       }
