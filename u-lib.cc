@@ -79,6 +79,20 @@ void assert_fail(const char* file, int line, const char* msg,
 //    Create a new thread.
 
 pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top) {
-    // Your code here
-    return E_NOSYS;
+  auto fn = function;
+  auto fn_arg = arg;
+  auto st = stack_top;
+  
+  int tid = make_syscall(SYSCALL_CLONE);
+  if (tid == 0) {
+    register uintptr_t rdi asm("rdi") = fn_arg;
+    asm volatile ("mov %[stack], %%rsp \n"
+		  "push %0 \n"
+		  "jmp %2 \n"
+		  : /* ? */
+		  : "+m" (sys_texit), "+m" (fn), "+m" (st), "+a" (rdi)
+		  : "cc", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "m");
+    // should not return
+  }
+  return tid;
 }

@@ -1,0 +1,65 @@
+superblock: nblocks 32768, ninodes 896
+  blocks: self 1, swap 0, fbb 1, inodes 14, data 32688, journal 64
+journal: no metablocks found
+inode 1 (root directory): size 4096, type directory, nlink 1
+  [0]: extent 172+1
+    dirent 0: name kernel, inode 2
+    dirent 1: name emerson.txt, inode 3
+    dirent 2: name dickinson.txt, inode 4
+    dirent 3: name thoreau.txt, inode 5
+    dirent 4: name wheatley.txt, inode 6
+    dirent 5: name allocator, inode 7
+    dirent 6: name allocexit, inode 8
+    dirent 7: name cat, inode 9
+    dirent 8: name echo, inode 10
+    dirent 9: name execallocexit, inode 11
+    dirent 10: name exececho, inode 12
+    dirent 11: name false, inode 13
+    dirent 12: name init, inode 14
+    dirent 13: name nastyalloc, inode 15
+    dirent 14: name readdiskfile, inode 16
+    dirent 15: name sh, inode 17
+    dirent 16: name sleep, inode 18
+    dirent 17: name true, inode 19
+    dirent 18: name wc, inode 20
+    dirent 19: name wcdiskfile, inode 21
+inode 2 (kernel): size 370656, type regular, nlink 1
+  [0]: extent 16+91
+inode 3 (emerson.txt): size 130, type regular, nlink 1
+  [0]: extent 107+1
+inode 4 (dickinson.txt): size 649, type regular, nlink 1
+  [0]: extent 108+1
+inode 5 (thoreau.txt): size 685, type regular, nlink 1
+  [0]: extent 109+1
+inode 6 (wheatley.txt): size 1958, type regular, nlink 1
+  [0]: extent 110+1
+inode 7 (allocator): size 13576, type regular, nlink 1
+  [0]: extent 111+4
+inode 8 (allocexit): size 13832, type regular, nlink 1
+  [0]: extent 115+4
+inode 9 (cat): size 13688, type regular, nlink 1
+  [0]: extent 119+4
+inode 10 (echo): size 12984, type regular, nlink 1
+  [0]: extent 123+4
+inode 11 (execallocexit): size 14304, type regular, nlink 1
+  [0]: extent 127+4
+inode 12 (exececho): size 13536, type regular, nlink 1
+  [0]: extent 131+4
+inode 13 (false): size 12672, type regular, nlink 1
+  [0]: extent 135+4
+inode 14 (init): size 12880, type regular, nlink 1
+  [0]: extent 139+4
+inode 15 (nastyalloc): size 13976, type regular, nlink 1
+  [0]: extent 143+4
+inode 16 (readdiskfile): size 13416, type regular, nlink 1
+  [0]: extent 147+4
+inode 17 (sh): size 18728, type regular, nlink 1
+  [0]: extent 151+5
+inode 18 (sleep): size 14072, type regular, nlink 1
+  [0]: extent 156+4
+inode 19 (true): size 12672, type regular, nlink 1
+  [0]: extent 160+4
+inode 20 (wc): size 15088, type regular, nlink 1
+  [0]: extent 164+4
+inode 21 (wcdiskfile): size 14888, type regular, nlink 1
+  [0]: extent 168+4

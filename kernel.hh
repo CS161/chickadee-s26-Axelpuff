@@ -33,11 +33,12 @@ struct __attribute__((aligned(4096))) proc {
     };
 
     // These four members must come first, at these byte offsets:
-    pid_t id_ = 0;                        //  0: Process ID
+    pid_t id_ = 0;                        //  0: Task ID
     regstate* regs_ = nullptr;            //  8: Process's current registers
     yieldstate* yields_ = nullptr;        // 16: Process's current yield state
     std::atomic<int> pstate_ = ps_blank;  // 24: Process state
-
+  
+    pid_t pid_ = 0;                            // Process ID (what process this task is associated with)
     x86_64_pagetable* pagetable_ = nullptr;    // Process's page table
     uintptr_t recent_user_rip_ = 0;            // Most recent user-mode %rip
 #if HAVE_SANITIZERS
@@ -87,7 +88,9 @@ struct __attribute__((aligned(4096))) proc {
     inline bool resumable() const;
     inline void unblock();
 
+    int syscall_clone(regstate* regs);
     int syscall_fork(regstate* regs);
+  
     [[noreturn]] void syscall_exit(regstate* regs);
 
     // helpers for waitpid

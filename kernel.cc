@@ -378,6 +378,9 @@ uintptr_t proc::syscall(regstate* regs) {
     return 0;
   }
 
+  case SYSCALL_CLONE:
+    return syscall_clone(regs);
+
   case SYSCALL_FORK:
     return syscall_fork(regs);
 
@@ -805,9 +808,9 @@ uintptr_t proc::syscall(regstate* regs) {
 #define E_NOPROC -67 // couldn't find an out of process error in lib.hh
 
 // CALLER MUST HOLD `ptable_lock`!!!
-// returns -1 on failure to find free pid
-int find_free_pid() {
-  // avoid pid 0
+// returns -1 on failure
+int find_free_tid() {
+  // avoid tid 0
   for (int pid = 1; pid != NPROC; ++pid) {
     if (!ptable[pid]) {
       return pid;
@@ -815,6 +818,19 @@ int find_free_pid() {
   }
   return -1;
 }
+
+
+// CALLER MUST HOLD `ptable_lock`!!!
+// returns -1 on failure to find free pid
+// int find_free_pid() {
+//   // avoid pid 0
+//   for (int pid = 1; pid != NPROC; ++pid) {
+//     if (!ptable[pid]) {
+//       return pid;
+//     }
+//   }
+//   return -1;
+// }
 
 // void kfree_pagetable(x86_64_pagetable *pagetable)
 // {
@@ -861,6 +877,55 @@ void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr) {
       pit.kfree_ptp();
     }
     delete pagetable;
+}
+
+// proc::syscall_clone(regs)
+//    Handle clone system call.
+//    Right now just a slightly modified version of fork
+
+int proc::syscall_clone(regstate* regs) {
+  // init new ptable entry
+  int tid;
+  proc* p;
+  { 
+      spinlock_guard guard_h(phierarchy_lock);
+      spinlock_guard guard(ptable_lock);
+      tid = find_free_tid();
+      if (tid < 0) {
+          // log_printf("failed to find a ptable slot\n");
+          return E_NOPROC;
+      }
+      p = knew<proc>();
+      if (!p) {
+          return E_NOMEM;
+      }
+      p->id_ = tid;
+      // !!! difference is here
+      p->pid_ = pid_;
+      p->init_user(pagetable_); // or just set it? idk
+      
+      *(p->regs_) = *regs;
+      p->regs_->reg_rax = 0;    
+      ptable[tid] = p;      
+  }
+
+  // copy fd_table, increment refcounts
+  spinlock_guard guard(fd_table_lock);
+  for (int i = 0; i < N_FILEDESC; i++) {
+    p->fd_table[i] = fd_table[i];
+    if (p->fd_table[i] != FD_EMPTY) {
+      spinlock_guard guard_f(file_table_lock);
+      file_incref(&file_table[fd_table[i]]);
+      // log_printf("ok: %i\n", i);
+    }
+  }
+  
+  assert(tid > 0);
+  // add to run queue
+  cpus[tid % ncpu].enqueue(p);
+  // return new task id to caller
+  // log_printf("Successfully cloned with tid %i\n", pid);
+  return tid;
 }
 
 // proc::syscall_fork(regs)
@@ -914,13 +979,13 @@ int proc::syscall_fork(regstate* regs) {
         }
     }
   // init new ptable entry
-  int pid;
+  int tid;
   proc* p;
   { 
       spinlock_guard guard_h(phierarchy_lock);
       spinlock_guard guard(ptable_lock);
-      pid = find_free_pid();
-      if (pid < 0) {
+      tid = find_free_tid();
+      if (tid < 0) {
           cleanup_pagetable(child_pagetable, addr);
           // log_printf("failed to find a ptable slot\n");
           return E_NOPROC;
@@ -930,12 +995,13 @@ int proc::syscall_fork(regstate* regs) {
           cleanup_pagetable(child_pagetable, addr);
           return E_NOMEM;
       }
-      p->id_ = pid;
+      p->id_ = tid;
+      p->pid_ = tid;
       p->parent_id_ = this->id_;
       p->init_user(child_pagetable);
       *(p->regs_) = *regs;
       p->regs_->reg_rax = 0;    
-      ptable[pid] = p;      
+      ptable[tid] = p;      
       // log_printf("Parenting %ld\n", p->id_);
       this->children.push_front(p);
       // log_printf("Done parenting %ld\n", p->id_);
@@ -952,12 +1018,12 @@ int proc::syscall_fork(regstate* regs) {
     }
   }
   
-  assert(pid > 0);
+  assert(tid > 0);
   // add to run queue
-  cpus[pid % ncpu].enqueue(p);
+  cpus[tid % ncpu].enqueue(p);
   // return child pid to parent
   // log_printf("Successfully forked process with pid %i\n", pid);
-  return pid;
+  return tid;
 }
 
 // int get_ptable_index(proc* p)
