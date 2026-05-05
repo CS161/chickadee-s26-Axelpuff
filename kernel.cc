@@ -902,23 +902,25 @@ int proc::syscall_clone(regstate* regs) {
       p->id_ = tid;
       // !!! difference is here
       p->pid_ = pid_;
+      spinlock_guard guard_pt(pagetable_lock_);
       p->init_user(pagetable_); // or just set it? idk
       
       *(p->regs_) = *regs;
       p->regs_->reg_rax = 0;    
+      p->group_leader_ = this;
       ptable[tid] = p;      
   }
 
   // copy fd_table, increment refcounts
-  spinlock_guard guard(fd_table_lock);
-  for (int i = 0; i < N_FILEDESC; i++) {
-    p->fd_table[i] = fd_table[i];
-    if (p->fd_table[i] != FD_EMPTY) {
-      spinlock_guard guard_f(file_table_lock);
-      file_incref(&file_table[fd_table[i]]);
-      // log_printf("ok: %i\n", i);
-    }
-  }
+  // spinlock_guard guard(fd_table_lock);
+  // for (int i = 0; i < N_FILEDESC; i++) {
+  //   p->fd_table[i] = fd_table[i];
+  //   if (p->fd_table[i] != FD_EMPTY) {
+  //     spinlock_guard guard_f(file_table_lock);
+  //     file_incref(&file_table[fd_table[i]]);
+  //     // log_printf("ok: %i\n", i);
+  //   }
+  // }
   
   assert(tid > 0);
   // add to run queue
@@ -931,8 +933,6 @@ int proc::syscall_clone(regstate* regs) {
 // proc::syscall_fork(regs)
 //    Handle fork system call.
 
-// !!! need to fix all the stupid ahh formatting from my old pset
-
 int proc::syscall_fork(regstate* regs) {
   // initialize process page table
   x86_64_pagetable *child_pagetable = knew_pagetable();
@@ -942,42 +942,34 @@ int proc::syscall_fork(regstate* regs) {
 
   // copy process code and data
   uintptr_t addr = 0;
-  for (; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE)
-      {
-          vmiter it(this, addr);
-          if (it.writable() && addr != CONSOLE_ADDR)
-              {
-                  assert(it.user());
-                  // alloc new physical memory for copy of parent process data
-                  void* pa = kalloc(PAGESIZE);
-                  if (!pa)
-                      {
-                          cleanup_pagetable(child_pagetable, addr);
-                          return E_NOMEM;
-                      }
-                  int r = vmiter(child_pagetable, it.va()).try_map(pa, it.perm());
-                  if (r != 0)
-                      {
-                          kfree(pa);
-                          cleanup_pagetable(child_pagetable, addr);
-                          return E_NOMEM;
-                      }
-                  memcpy(pa, reinterpret_cast<void *>(addr), PAGESIZE);
-              }
-          else if (it.user()) {
-              // copy read-only segments
-              int r = vmiter(child_pagetable, it.va()).try_map(it.pa(), it.perm());
-              if (r != 0)
-                  {
-                      cleanup_pagetable(child_pagetable, addr);
-                      return E_NOMEM;
-                  }
-              // increment ref count (this helps preserve the read-only data when
-              // one process that uses it frees)
-	  // int pageno = it.pa() / PAGESIZE;
-	  // physpages[pageno].refcount++;
-        }
+  for (; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE) {
+    vmiter it(this, addr);
+    if (it.writable() && addr != CONSOLE_ADDR) {
+      assert(it.user());
+      // alloc new physical memory for copy of parent process data
+      void* pa = kalloc(PAGESIZE);
+      if (!pa) {
+	cleanup_pagetable(child_pagetable, addr);
+	return E_NOMEM;
+      }
+      int r = vmiter(child_pagetable, it.va()).try_map(pa, it.perm());
+      if (r != 0) {
+	kfree(pa);
+	cleanup_pagetable(child_pagetable, addr);
+	return E_NOMEM;
+      }
+      memcpy(pa, reinterpret_cast<void *>(addr), PAGESIZE);
     }
+    else if (it.user()) {
+      // copy read-only segments
+      int r = vmiter(child_pagetable, it.va()).try_map(it.pa(), it.perm());
+      if (r != 0) {
+	cleanup_pagetable(child_pagetable, addr);
+	return E_NOMEM;
+      }
+    }
+  }
+  
   // init new ptable entry
   int tid;
   proc* p;
@@ -998,9 +990,11 @@ int proc::syscall_fork(regstate* regs) {
       p->id_ = tid;
       p->pid_ = tid;
       p->parent_id_ = this->id_;
+      spinlock_guard guard_pt(p->pagetable_lock_);
       p->init_user(child_pagetable);
       *(p->regs_) = *regs;
-      p->regs_->reg_rax = 0;    
+      p->regs_->reg_rax = 0;
+      p->group_leader_ = p;
       ptable[tid] = p;      
       // log_printf("Parenting %ld\n", p->id_);
       this->children.push_front(p);
@@ -1027,6 +1021,25 @@ int proc::syscall_fork(regstate* regs) {
 }
 
 // int get_ptable_index(proc* p)
+
+// proc::syscall_texit(regs)
+//    Exit current process.
+
+void proc::syscall_texit(regstate* regs) {  
+    // log_printf("Process %ld is exiting...\n", this->id_);
+    
+    // regs_ = regs; // ??? inefficient? this state is never used
+        
+    {
+      spinlock_guard guard_h(phierarchy_lock);
+      spinlock_guard guard(ptable_lock);
+      // mark as zombie
+      this->pstate_ = ps_zombie;
+    }
+    
+    // from this point on the proc struct and stack might be obliterated
+    yield_noreturn();
+}
 
 
 // proc::syscall_exit(regs)

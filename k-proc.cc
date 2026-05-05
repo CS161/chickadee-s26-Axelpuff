@@ -78,7 +78,8 @@ void proc::init_kernel(void (*f)()) {
     regs_->reg_rdi = addr;
 }
 
-// !!! comment tba
+// proc::stack_check_fail()
+//    Called when stack check fails
 
 void proc::stack_check_fail() {
   panic("Stack check failed\n");

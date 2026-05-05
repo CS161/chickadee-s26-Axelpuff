@@ -25,94 +25,105 @@ struct elf_program;
 //
 //    Functions, constants, and definitions for the kernel.
 
-
-// Process descriptor type
-struct __attribute__((aligned(4096))) proc {
-    enum pstate_t {
-      ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_zombie, ps_collected, ps_faulted, ps_blocked
-    };
-
-    // These four members must come first, at these byte offsets:
-    pid_t id_ = 0;                        //  0: Task ID
-    regstate* regs_ = nullptr;            //  8: Process's current registers
-    yieldstate* yields_ = nullptr;        // 16: Process's current yield state
-    std::atomic<int> pstate_ = ps_blank;  // 24: Process state
+struct task_group {
+  // Shared resources
+  x86_64_pagetable* pagetable_ = nullptr;    // Process's page table // process
+  spinlock pagetable_lock_; // for synchronizing between multiple threads  // a lock for the pagetable
   
-    pid_t pid_ = 0;                            // Process ID (what process this task is associated with)
-    x86_64_pagetable* pagetable_ = nullptr;    // Process's page table
-    uintptr_t recent_user_rip_ = 0;            // Most recent user-mode %rip
+  unsigned int fd_table_[N_FILEDESC]; // process
+  spinlock fd_table_lock; // process
+
+  // Phone book
+  list_links task_links_;
+  list<proc, &proc::task_links_> tasks_;
+
+  // "It takes a village to raise a child"
+  pid_t parent_id_ = 0; // 0 should never be the parent id during runtime
+  list_links child_links_;
+  list<proc, &proc::child_links_> children_;
+  int exit_status_ = 0; // check out my music under the alias "Exit Status" on soundcloud (https://soundcloud.com/exit-status)
+  int blocked_wq_ = -1; // helps the child wake up this process by pointing to the queue it's sleeping on
+  bool child_exited_ = 0; // for early exit from msleep when child exits
+  
+  // unsigned long resume_counter_ = 0; // this is for that one part where I had to show there were less resumes
+}
+
+// Process (actually a task) descriptor type
+struct __attribute__((aligned(4096))) proc {
+  enum pstate_t {
+    ps_blank = 0, ps_runnable = PROC_RUNNABLE, ps_zombie, ps_collected, ps_faulted, ps_blocked
+  };
+
+  // These four members must come first, at these byte offsets:
+  pid_t id_ = 0;                        //  0: Task ID
+  regstate* regs_ = nullptr;            //  8: Process's current registers // task
+  yieldstate* yields_ = nullptr;        // 16: Process's current yield state // task
+  std::atomic<int> pstate_ = ps_blank;  // 24: Process state // task
+  
+  uintptr_t recent_user_rip_ = 0;            // Most recent user-mode %rip // task
 #if HAVE_SANITIZERS
-    int sanitizer_status_ = 0;
+  int sanitizer_status_ = 0; // task
 #endif
 
-    // Per-CPU run queue, controlled by cpustate::runq_lock_
-    list_links runq_links_;                    // Links for run queue
-    int runq_cpu_ = -1;                        // CPU index of recent run queue
+  // Per-CPU run queue, controlled by cpustate::runq_lock_
+  list_links runq_links_;                    // Links for run queue // task
+  int runq_cpu_ = -1;                        // CPU index of recent run queue // task
 
   // non-handout (therefore highly dangerous) members
-  pid_t parent_id_ = 0; // this should never be the parent id during runtime
-  list_links child_links_;
-  list<proc, &proc::child_links_> children;
-  int exit_status_ = 0; // check out my music under the alias "Exit Status" on soundcloud (https://soundcloud.com/exit-status)
+  pid_t pid_ = 0;                            // Process ID (what process this task is associated with) // task
+  task_group* group_;
+
+  // This member must come last
+  int stack_bottom_canary = CANARY_VALUE; // task
+
+  proc();
+  NO_COPY_OR_ASSIGN(proc);
+
+  inline bool contains(uintptr_t addr) const; // ?
+  inline bool contains(void* ptr) const;
+
+  void init_user(x86_64_pagetable* pt);
+  void init_kernel(void (*f)());
+
+  static int load(proc_loader& ld);
+
+  void exception(regstate* reg);
+  uintptr_t syscall(regstate* reg);
+
+  void yield();
+  [[noreturn]] void yield_noreturn();
+  [[noreturn]] void resume();
+  [[noreturn]] void panic_nonrunnable();
+  [[noreturn]] void stack_check_fail();
+
+  inline bool resumable() const;
+  inline void unblock();
+
+  int syscall_clone(regstate* regs);
+  int syscall_fork(regstate* regs);
   
-  // unsigned long resume_counter_ = 0;
-  int blocked_wq_ = -1;
-  bool child_exited_ = 0;
+  [[noreturn]] void syscall_exit(regstate* regs);
 
-  unsigned int fd_table[N_FILEDESC];
-  spinlock fd_table_lock;
+  // helpers for waitpid
+  proc* find_zombie_child(); // ??? should go to task_group?
+  int cleanup_and_return_status(proc* p);  
 
-    // This member must come last
-    int stack_bottom_canary = CANARY_VALUE;
-
-    proc();
-    NO_COPY_OR_ASSIGN(proc);
-
-    inline bool contains(uintptr_t addr) const;
-    inline bool contains(void* ptr) const;
-
-    void init_user(x86_64_pagetable* pt);
-    void init_kernel(void (*f)());
-
-    static int load(proc_loader& ld);
-
-    void exception(regstate* reg);
-    uintptr_t syscall(regstate* reg);
-
-    void yield();
-    [[noreturn]] void yield_noreturn();
-    [[noreturn]] void resume();
-    [[noreturn]] void panic_nonrunnable();
-    [[noreturn]] void stack_check_fail();
-
-    inline bool resumable() const;
-    inline void unblock();
-
-    int syscall_clone(regstate* regs);
-    int syscall_fork(regstate* regs);
+  uintptr_t syscall_read(regstate* reg);
+  uintptr_t syscall_write(regstate* reg);
+  uintptr_t syscall_readdiskfile(regstate* reg);
+  ssize_t syscall_lseek(regstate* reg);
   
-    [[noreturn]] void syscall_exit(regstate* regs);
+  int syscall_getusage(regstate* regs);
+  int syscall_testkalloc(regstate* regs);
 
-    // helpers for waitpid
-    proc* find_zombie_child();
-    int cleanup_and_return_status(proc* p);  
-
-    uintptr_t syscall_read(regstate* reg);
-    uintptr_t syscall_write(regstate* reg);
-    uintptr_t syscall_readdiskfile(regstate* reg);
-    ssize_t syscall_lseek(regstate* reg);
+  inline irqstate lock_pagetable_read();
+  inline void unlock_pagetable_read(irqstate& irqs);
   
-    int syscall_getusage(regstate* regs);
-    int syscall_testkalloc(regstate* regs);
+  // get canary location at runtime; avoid hard coding canary location
+  void* stack_bottom_canary_ptr();
 
-    inline irqstate lock_pagetable_read();
-    inline void unlock_pagetable_read(irqstate& irqs);
-  
-    // get canary location at runtime; avoid hard coding canary location
-    void* stack_bottom_canary_ptr();
-
- private:
-    static int load_segment(const elf_program& ph, proc_loader& ld);
+private:
+  static int load_segment(const elf_program& ph, proc_loader& ld);
 };
 
 #define NPROC 16
