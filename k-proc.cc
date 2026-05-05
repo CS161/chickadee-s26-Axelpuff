@@ -44,7 +44,7 @@ void proc::init_user(x86_64_pagetable* pt) {
     assert(pt->entry[256] == early_pagetable->entry[256]);
     assert(pt->entry[511] == early_pagetable->entry[511]);
 
-    pagetable_ = pt;
+    group_->pagetable_ = pt;
     pstate_ = proc::ps_runnable;
 
     regs_ = reinterpret_cast<regstate*>(addr + PROCSTACK_SIZE) - 1;
@@ -65,7 +65,7 @@ void proc::init_kernel(void (*f)()) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(this);
     assert(!(addr & PAGEOFFMASK));
 
-    pagetable_ = early_pagetable;
+    group_->pagetable_ = early_pagetable;
     pstate_ = proc::ps_runnable;
 
     regs_ = reinterpret_cast<regstate*>(addr + PROCSTACK_SIZE) - 1;

@@ -122,14 +122,14 @@ void memusage::refresh() {
         mark(ka2pa(p), f_kernel | f_process(pid));
 
         auto irqs = p->lock_pagetable_read();
-        if (p->pagetable_ && p->pagetable_ != early_pagetable) {
+        if (p->group_->pagetable_ && p->group_->pagetable_ != early_pagetable) {
             // log_printf("highmem base: %p\n", HIGHMEM_BASE);
             // log_printf("negative highmem base: %p\n", -HIGHMEM_BASE);
             for (ptiter it(p); it.low(); it.next()) {
                 // log_printf("let me try... %p\n", it.pa());
                 mark(it.pa(), f_kernel | f_process(pid));
             }
-            mark(ka2pa(p->pagetable_), f_kernel | f_process(pid));
+            mark(ka2pa(p->group_->pagetable_), f_kernel | f_process(pid));
 
             for (vmiter it(p, 0); it.low(); ) {
                 if (it.user()) {
@@ -266,7 +266,7 @@ void console_memviewer(proc* vmp) {
     bool need_clear = true;
     if (vmp) {
         auto irqs = vmp->lock_pagetable_read();
-        if (vmp->pagetable_ && vmp->pagetable_ != early_pagetable) {
+        if (vmp->group_->pagetable_ && vmp->group_->pagetable_ != early_pagetable) {
             console_memviewer_virtual(mu, vmp);
             need_clear = false;
         }

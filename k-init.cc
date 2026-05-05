@@ -42,6 +42,7 @@ void init_hardware() {
 
     // initialize kernel allocator
     init_kalloc();
+    
 
     // initialize other CPUs
     init_other_processors();
@@ -50,7 +51,7 @@ void init_hardware() {
     // after CPUs initialize, enable address sanitization
     enable_asan();
 #endif
-
+  
     // enable interrupts
     cpus[0].enable_irq(IRQ_KEYBOARD);
 

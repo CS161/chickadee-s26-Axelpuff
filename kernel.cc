@@ -43,25 +43,6 @@ void kernel_start(const char* command) {
     }
     init_kc_file(&file_table[KC_FILE_NUM]);
   }
-
-  // // set up keyboard/console vnode
-  // vnode* kcvn = knew<vnode>(&kc_vops);
-  // {
-  //   spinlock_guard guard(kcvn->refcount_lock);
-  //   kcvn->refcount = 1; // ??? is this incremented per file pointing to this vnode or what
-  // }
-
-  // {
-  //   file* kc_file = &file_table[KC_FILE_NUM];
-  //   spinlock_guard guard(file_table_lock);
-  //   spinlock_guard guard_file(kc_file->file_lock);
-  //   kc_file->type = FTYPE_VNODE;
-  //   kc_file->refcount_ = 0; 
-  //   kc_file->flags = FREAD | FWRITE;
-  //   kc_file->off_ = 0;
-  //   kc_file->vnode_ = kcvn;
-  //   kc_file->ops = &vn_fops;
-  // }
   
   // start init
   start_initial_process(1, "init");
@@ -93,29 +74,35 @@ void start_initial_process(pid_t pid, const char* name) {
 
   // allocate process, initialize registers
   proc* p = knew<proc>();
+  task_group* g = knew<task_group>();
+  g->parent_id_ = 1;
+  g->live_task_count_ = 1;
+  g->tasks_.push_front(p);
+
   p->id_ = pid;
-  p->parent_id_ = 1;
+  p->pid_ = pid;
+  p->group_ = g;
   p->init_user(pt);
   p->regs_->reg_rip = ld.entry_rip_;
-  
+
   // initialize stack
   void* stkpg = kalloc(PAGESIZE);
   assert(stkpg);
-  vmiter(p, MEMSIZE_VIRTUAL - PAGESIZE).map(stkpg, PTE_PWU);
+  vmiter(pt, MEMSIZE_VIRTUAL - PAGESIZE).map(stkpg, PTE_PWU);
   p->regs_->reg_rsp = MEMSIZE_VIRTUAL;
 
   // initialize fd table
   // (do I need to get a lock here even though nothing else should be touching this?)
   for (int i = 0; i < 3; i++) {
-    p->fd_table[i] = KC_FILE_NUM;
+    g->fd_table_[i] = KC_FILE_NUM;
     file_incref(&file_table[KC_FILE_NUM]);
   }
   for (int i = 3; i < N_FILEDESC; i++) {
-    p->fd_table[i] = FD_EMPTY;
+    g->fd_table_[i] = FD_EMPTY;
   }
 
   // map console
-  vmiter(p, ktext2pa(console)).map(console, PTE_PWU);
+  vmiter(pt, ktext2pa(console)).map(console, PTE_PWU);
 
   // add to process table (requires lock in case another CPU is already
   // running processes)
@@ -125,10 +112,10 @@ void start_initial_process(pid_t pid, const char* name) {
     assert(!ptable[pid]);
     ptable[pid] = p;
     // if this process is not init, make it init's child
-    // assumption: the init process is its own parent, but not its own child. 
+    // assumption: the init process is its own parent, but not its own child.
     if (pid != 1) {
       assert(ptable[1]);
-      ptable[1]->children.push_front(p);
+      ptable[1]->group_->children_.push_front(g);
     }
   }
 
@@ -216,11 +203,11 @@ void proc::exception(regstate* regs) {
 
 // utility to avoid hard-coding the stack bottom canary offset
 [[gnu::noinline]] void* proc::stack_bottom_canary_ptr() {
-    // // log_printf("ptr: %p\n", &(this->stack_bottom_canary));
-    // // log_printf("canary value: %i\n", this->stack_bottom_canary);
-    // // log_printf("ptr2: %p\n", this);
-    // // log_printf("val2: %i\n", this->canary);
-    return &(this->stack_bottom_canary);
+  // // log_printf("ptr: %p\n", &(this->stack_bottom_canary));
+  // // log_printf("canary value: %i\n", this->stack_bottom_canary);
+  // // log_printf("ptr2: %p\n", this);
+  // // log_printf("val2: %i\n", this->canary);
+  return &(this->stack_bottom_canary);
 }
 
 // helper function for waitpid, stores two `int`s as one `uintptr_t`
@@ -235,33 +222,54 @@ uintptr_t format_waitpid_return(int exit_status, int syscall_return) {
 void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr);
 
 // MUST BE CALLED holding `phierarchy_lock`
-proc* proc::find_zombie_child() {
-  proc* p = this->children.front();
-  while (p != nullptr) {
-    assert(p->parent_id_ == this->id_);
-    if (p->pstate_ == ps_zombie) {
+task_group* proc::find_zombie_child() {
+  task_group* g = this->group_->children_.front();
+  while (g != nullptr) {
+    // log_printf("parent id is %i\n", g->parent_id_);
+    assert(g->parent_id_ == this->pid_);
+    if (g->live_task_count_ == 0) {
       break;
     } else {
-      p = this->children.next(p);
+      g = this->group_->children_.next(g);
     }
   }
-  return p;
+  return g;
 }
 
-// cleans up (euphemism) zombie child process and returns exit status
+// // cleans up (euphemism) zombie child process and returns exit status
+// // MUST BE CALLED holding both `phierarchy_lock` and `ptable_lock`
+// int proc::cleanup_and_return_status(proc* p) {
+//   // log_printf("checking process %d...\n", p->id_);
+//   assert(p != this);
+//   pid_t pid = p->id_;
+//   int exit_status = p->group_->exit_status_;
+
+//   p->pstate_ = ps_collected; // pointless?
+//   ptable[pid] = nullptr;
+//   p->group_->child_links_.erase();
+	    
+//   // log_printf("Trying to clean up process %d\n", pid);
+//   delete p;
+//   // log_printf("Cleaned up process %d\n", pid);
+//   return exit_status;
+// }
+
+// cleans up (euphemism) zombie child task group and returns exit status
 // MUST BE CALLED holding both `phierarchy_lock` and `ptable_lock`
-int proc::cleanup_and_return_status(proc* p) {
+int proc::cleanup_and_return_status(task_group* g) {
   // log_printf("checking process %d...\n", p->id_);
-  assert(p != this);
-  pid_t pid = p->id_;
-  int exit_status = p->exit_status_;
-	    
-  p->pstate_ = ps_collected; // pointless?
-  ptable[pid] = nullptr;
-  p->child_links_.erase();
-	    
-  // log_printf("Trying to clean up process %d\n", pid);
-  delete p;
+  int exit_status = g->exit_status_;
+  
+  spinlock_guard guard(group_->tasks_lock_);
+  for (proc* p = g->tasks_.pop_front(); p != nullptr; p = g->tasks_.pop_front()) {
+    pid_t pid = p->id_;
+    p->pstate_ = ps_collected; // pointless?
+    ptable[pid] = nullptr;
+        
+    delete p;
+  }
+  g->child_links_.erase();
+  delete g;
   // log_printf("Cleaned up process %d\n", pid);
   return exit_status;
 }
@@ -296,7 +304,7 @@ int valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t start_addr, int fla
   uintptr_t addr = start_addr;
   // log_printf("addr from perspective 2: %zu\n", addr);
   while (addr - start_addr < max_pathname_len && addr < VA_LOWEND) {
-     // log_printf("difference is now %zu...\n", addr - start_addr);
+    // log_printf("difference is now %zu...\n", addr - start_addr);
     vmiter it(pagetable, addr);
     if (!(it.perm() & flags)) {
       return -1;
@@ -318,9 +326,9 @@ int valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t start_addr, int fla
 
 uintptr_t proc::syscall(regstate* regs) {
   //// log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
-    // // log_printf("Size of regstate: %zu\n", sizeof(*regs));
-    // // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->stack_bottom_canary) - reinterpret_cast<uintptr_t>(this));
-    // // log_printf("canary value: %i\n", this->stack_bottom_canary);
+  // // log_printf("Size of regstate: %zu\n", sizeof(*regs));
+  // // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->stack_bottom_canary) - reinterpret_cast<uintptr_t>(this));
+  // // log_printf("canary value: %i\n", this->stack_bottom_canary);
 
   // Record most recent user-mode %rip.
   recent_user_rip_ = regs->reg_rip;
@@ -413,20 +421,20 @@ uintptr_t proc::syscall(regstate* regs) {
   }
 
   case SYSCALL_CLOSE: {
-    spinlock_guard guard(fd_table_lock);
+    spinlock_guard guard(group_->fd_table_lock);
     int fd = regs->reg_rdi;
-    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+    if (fd < 0 || fd >= N_FILEDESC || group_->fd_table_[fd] == FD_EMPTY) {
       return E_BADF;
     }
-    return close_fd(fd, fd_table); // this should just be 0 since right now close_fd always returns 0
+    return close_fd(fd, group_->fd_table_); // this should just be 0 since right now close_fd always returns 0
   }
 
   case SYSCALL_PIPE: {
     // Find fd table slots
     int read_fd = -1, write_fd = -1;
-    spinlock_guard guard(fd_table_lock);
+    spinlock_guard guard(group_->fd_table_lock);
     for (int i = 0; i < N_FILEDESC; i++) {
-      if (fd_table[i] == FD_EMPTY) {
+      if (group_->fd_table_[i] == FD_EMPTY) {
 	if (read_fd != -1) {
 	  write_fd = i;
 	  break;
@@ -460,8 +468,8 @@ uintptr_t proc::syscall(regstate* regs) {
     init_pipe_files(&file_table[read_fileid], &file_table[write_fileid]);
     assert(file_table[read_fileid].flags == FREAD && file_table[write_fileid].flags == FWRITE);
 
-    fd_table[read_fd] = read_fileid;
-    fd_table[write_fd] = write_fileid;
+    group_->fd_table_[read_fd] = read_fileid;
+    group_->fd_table_[write_fd] = write_fileid;
     file_incref(&file_table[read_fileid]);
     file_incref(&file_table[write_fileid]);
 
@@ -471,13 +479,13 @@ uintptr_t proc::syscall(regstate* regs) {
   }
     
   case SYSCALL_DUP2: {
-    spinlock_guard guard(fd_table_lock);
+    spinlock_guard guard(group_->fd_table_lock);
     int oldfd = regs->reg_rdi;
     int newfd = regs->reg_rsi;
     // Validate arguments
     if (oldfd < 0
 	|| oldfd >= N_FILEDESC
-	|| fd_table[oldfd] == FD_EMPTY
+	|| group_->fd_table_[oldfd] == FD_EMPTY
 	|| newfd < 0
 	|| newfd >= N_FILEDESC) {
       return E_BADF;
@@ -486,13 +494,13 @@ uintptr_t proc::syscall(regstate* regs) {
       return newfd;
     }
     // Atomically close newfd (silently, error is ignored) and replace
-    if (fd_table[newfd] != FD_EMPTY) {
-      close_fd(newfd, fd_table);
+    if (group_->fd_table_[newfd] != FD_EMPTY) {
+      close_fd(newfd, group_->fd_table_);
     }
-    fd_table[newfd] = fd_table[oldfd];
+    group_->fd_table_[newfd] = group_->fd_table_[oldfd];
     // Increment ref count of file
     spinlock_guard guard_f(file_table_lock);
-    file_incref(&file_table[fd_table[newfd]]);
+    file_incref(&file_table[group_->fd_table_[newfd]]);
     return newfd;
   }
 
@@ -500,7 +508,7 @@ uintptr_t proc::syscall(regstate* regs) {
     uintptr_t addr = regs->reg_rdi;
     int flags = regs->reg_rsi;
     // assume a filename needs to be at least one character long
-    if (valid_user_buffer(pagetable_, addr, PTE_P | PTE_U) <= 0) {
+    if (valid_user_buffer(group_->pagetable_, addr, PTE_P | PTE_U) <= 0) {
       return E_FAULT;
     }
     const char* pathname = reinterpret_cast<const char*>(addr);
@@ -525,9 +533,9 @@ uintptr_t proc::syscall(regstate* regs) {
     
     // Find fd
     int fd = -1;
-    spinlock_guard guard(fd_table_lock);
+    spinlock_guard guard(group_->fd_table_lock);
     for (int i = 0; i < N_FILEDESC; i++) {
-      if (fd_table[i] == FD_EMPTY) {
+      if (group_->fd_table_[i] == FD_EMPTY) {
 	fd = i;
 	break;
       }
@@ -554,7 +562,7 @@ uintptr_t proc::syscall(regstate* regs) {
     init_diskfile_entry(&file_table[fileid], vn, flags);
     
     // ??? maybe: abstract this into a function since I keep forgetting to do incref
-    fd_table[fd] = fileid;
+    group_->fd_table_[fd] = fileid;
     file_incref(&file_table[fileid]);
     return fd;
   }
@@ -569,23 +577,23 @@ uintptr_t proc::syscall(regstate* regs) {
     }
     
     // validate pathname
-    if (valid_user_buffer(pagetable_, pathname_addr, PTE_P | PTE_U) <= 0) {
+    if (valid_user_buffer(group_->pagetable_, pathname_addr, PTE_P | PTE_U) <= 0) {
       return E_FAULT;
     }
     const char* pathname = reinterpret_cast<const char*>(pathname_addr);
-    
+
     // validate argv
     size_t argv_sz = argc * sizeof(const char*);
-    if (valid_user_buffer(pagetable_, argv_addr, argv_sz, PTE_P | PTE_U) == -1) {
-	log_printf("argv not valid\n");
-	return E_FAULT;
+    if (valid_user_buffer(group_->pagetable_, argv_addr, argv_sz, PTE_P | PTE_U) == -1) {
+      log_printf("argv not valid\n");
+      return E_FAULT;
     }
     const char* const* argv = reinterpret_cast<const char* const*>(argv_addr);
     size_t argv_char_lens[argc]; // COUNTING NULL TERMINATORS
     size_t argv_total_chars = 0; // COUNTING NULL TERMINATORS
     for (int i = 0; i < argc; i++) {
       uintptr_t addr = reinterpret_cast<uintptr_t>(argv[i]);
-      int len = valid_user_buffer(pagetable_, addr, PTE_P | PTE_U);
+      int len = valid_user_buffer(group_->pagetable_, addr, PTE_P | PTE_U);
       // log_printf("on argument %i\n", i);
       assert(len != 0); // not sure if this can/should happen
       if (len <= 0) { // should this be < ?
@@ -668,7 +676,7 @@ uintptr_t proc::syscall(regstate* regs) {
     
     // there's no going back now...
     // install new page table and initialize fresh registers
-    x86_64_pagetable* old_pagetable = pagetable_;
+    x86_64_pagetable* old_pagetable = group_->pagetable_;
     init_user(pt);
     // setup rip, rsp, rdi, rsi
     regs_->reg_rip = ld.entry_rip_;
@@ -691,23 +699,23 @@ uintptr_t proc::syscall(regstate* regs) {
 
     spinlock_guard guard(sleep_lock);
     int q = t_wakeup & (WHEEL_QUEUES - 1);
-    blocked_wq_ = q;
-    child_exited_ = 0;
-    
+    group_->blocked_wq_ = q;
+    group_->child_exited_ = 0;
+
     waiter w;
     w.wait_until(sleep_wq_wheel[q], [&] () {
-      return (long(t_wakeup - ticks) <= 0 || child_exited_ == 1);
+      return (long(t_wakeup - ticks) <= 0 || group_->child_exited_ == 1);
     }, guard);
 
     // unsigned long final_resumes = resume_counter_;
     // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);
-    blocked_wq_ = -1;
-    return child_exited_ ? E_INTR : 0;
+    group_->blocked_wq_ = -1;
+    return group_->child_exited_ ? E_INTR : 0;
   }
 
   case SYSCALL_GETPPID: {
     spinlock_guard guard_h(phierarchy_lock);
-    return this->parent_id_;
+    return this->group_->parent_id_;
   }
 
   case SYSCALL_WAITPID: {
@@ -719,16 +727,16 @@ uintptr_t proc::syscall(regstate* regs) {
       return format_waitpid_return(0, E_NOSYS);
     }
     
-    spinlock_guard guard_h(phierarchy_lock);      
+    spinlock_guard guard_h(phierarchy_lock);
     if (pid == 0) {
-      proc* p = this->children.front();
-      if (!p) {
+      task_group* g = group_->children_.front();
+      if (!g) {
 	// log_printf("%d: couldn't find zombies to reap, no children\n", id_);
 	return format_waitpid_return(0, E_CHILD);
       }
 	
-      p = find_zombie_child(); // pstate_ is atomic so this doesn't need ptable lock
-      if (!p) {
+      g = find_zombie_child(); // pstate_ is atomic so this doesn't need ptable lock
+      if (!g) {
 	if (wnohang) {
 	  // log_printf("%d: couldn't find zombies to reap, still alive\n", id_);
 	  return format_waitpid_return(0, E_AGAIN);
@@ -737,26 +745,33 @@ uintptr_t proc::syscall(regstate* regs) {
 	  // unsigned long initial_resumes = resume_counter_;	  
 	  waiter w;
 	  w.wait_until(proc_exit_wq, [&] () {
-	    return (p = find_zombie_child()); // this is meant to be an assignment
+	    return (g = find_zombie_child()); // this is intentionally an assignment
 	  }, guard_h);	 
 	  // unsigned long final_resumes = resume_counter_;
 	  // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
 	}
       }
 	
-      assert(p);
-      pid = p->id_;
+      assert(g);
+      {
+	spinlock_guard guard(g->tasks_lock_);
+	assert(g->tasks_.front());
+	pid = g->tasks_.front()->pid_;
+      }
       spinlock_guard guard(ptable_lock);
-      int exit_status = cleanup_and_return_status(p);
+      int exit_status = cleanup_and_return_status(g);
       return format_waitpid_return(exit_status, pid);
     } else {
       spinlock_guard guard(ptable_lock);
-      if (!ptable[pid] || ptable[pid]->parent_id_ != this->id_) {
+      if (!ptable[pid] || ptable[pid]->group_->parent_id_ != this->id_) {
 	return format_waitpid_return(0, E_CHILD);
       }
       proc* p = ptable[pid];
+      if (p->id_ != p->pid_) { // the id needs to be for a group leader
+	return format_waitpid_return(0, E_INVAL);
+      }
       guard.unlock();
-      if (p->pstate_ != ps_zombie) {
+      if (p->group_->live_task_count_ != 0) {
 	if (wnohang) {
 	  return format_waitpid_return(0, E_AGAIN);
 	} else {
@@ -764,7 +779,7 @@ uintptr_t proc::syscall(regstate* regs) {
 	  // unsigned long initial_resumes = resume_counter_;    
 	  waiter w;
 	  w.wait_until(proc_exit_wq, [&] () {
-	    return (p->pstate_ == ps_zombie);
+	    return (p->group_->live_task_count_ == 0);
 	  }, guard_h);
 	  // unsigned long final_resumes = resume_counter_;
 	  // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
@@ -773,7 +788,7 @@ uintptr_t proc::syscall(regstate* regs) {
 	
       assert(p->pstate_ == ps_zombie);
       guard.lock();
-      int exit_status = cleanup_and_return_status(p);
+      int exit_status = cleanup_and_return_status(p->group_);
       return format_waitpid_return(exit_status, pid);
     }
   }
@@ -782,18 +797,18 @@ uintptr_t proc::syscall(regstate* regs) {
     return syscall_getusage(regs);
 
   case SYSCALL_CORRUPT: {
-      char test;
-      uintptr_t target = reinterpret_cast<uintptr_t>(&test) - PROCSTACK_SIZE + 0x125;
-      for (int i = 0; i < 150; i++) {
-          char* ptr = reinterpret_cast<char*>(target + i);
-          // log_printf("Wiped %p\n", ptr);
-          *ptr = 0;
-      }
+    char test;
+    uintptr_t target = reinterpret_cast<uintptr_t>(&test) - PROCSTACK_SIZE + 0x125;
+    for (int i = 0; i < 150; i++) {
+      char* ptr = reinterpret_cast<char*>(target + i);
+      // log_printf("Wiped %p\n", ptr);
+      *ptr = 0;
+    }
     return 0;
   }
 
   case SYSCALL_TESTKALLOC:
-      return syscall_testkalloc(regs);
+    return syscall_testkalloc(regs);
 
   default:
     // no such system call
@@ -842,28 +857,28 @@ int find_free_tid() {
 // }
 
 void cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr) {
-    size_t cleaned_pages = 0;
-    vmiter it = vmiter(pagetable, 0);
-    while (it.va() < max_addr) {
-        // !!! Is there a potential issue here with iterating by pagesize if allocations are larger than a page? Or does .user() get updated?
-        if (it.user() && it.va() != CONSOLE_ADDR) {
-            assert(it.writable());
-            // void* ptr = pa2kptr<void*>(it.pa());
-            // log_printf("trying to free %p\n", it.va());
-            it.kfree_page();
-            // log_printf("succesfully freed %p\n", it.va());
-            // assert(!it.user());
-            // assert(it.pa() == (uintptr_t) -1);
-            cleaned_pages++;
-        // } else {
-            // // log_printf("skipping %p\n", addr);
-        }
-        it.next();
+  size_t cleaned_pages = 0;
+  vmiter it = vmiter(pagetable, 0);
+  while (it.va() < max_addr) {
+    // !!! Is there a potential issue here with iterating by pagesize if allocations are larger than a page? Or does .user() get updated?
+    if (it.user() && it.va() != CONSOLE_ADDR) {
+      assert(it.writable());
+      // void* ptr = pa2kptr<void*>(it.pa());
+      // log_printf("trying to free %p\n", it.va());
+      it.kfree_page();
+      // log_printf("succesfully freed %p\n", it.va());
+      // assert(!it.user());
+      // assert(it.pa() == (uintptr_t) -1);
+      cleaned_pages++;
+      // } else {
+      // // log_printf("skipping %p\n", addr);
     }
+    it.next();
+  }
 
-    // log_printf("max_addr: %p\n", max_addr);
-    // log_printf("memsize_virtual: %p\n", MEMSIZE_VIRTUAL);    
-    // log_printf("%zu pages freed \n", cleaned_pages);
+  // log_printf("max_addr: %p\n", max_addr);
+  // log_printf("memsize_virtual: %p\n", MEMSIZE_VIRTUAL);    
+  // log_printf("%zu pages freed \n", cleaned_pages);
 }    
 
 // cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr)
@@ -871,12 +886,12 @@ void cleanup_process_memory(x86_64_pagetable *pagetable, uintptr_t max_addr) {
 //    in `pagetable`, EXCLUDING max_addr, and then frees `pagetable` itself
 
 void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr) {
-    cleanup_process_memory(pagetable, max_addr);
+  cleanup_process_memory(pagetable, max_addr);
 
-    for (ptiter pit(pagetable); pit.low(); pit.next()) {
-      pit.kfree_ptp();
-    }
-    delete pagetable;
+  for (ptiter pit(pagetable); pit.low(); pit.next()) {
+    pit.kfree_ptp();
+  }
+  delete pagetable;
 }
 
 // proc::syscall_clone(regs)
@@ -888,27 +903,34 @@ int proc::syscall_clone(regstate* regs) {
   int tid;
   proc* p;
   { 
-      spinlock_guard guard_h(phierarchy_lock);
-      spinlock_guard guard(ptable_lock);
-      tid = find_free_tid();
-      if (tid < 0) {
-          // log_printf("failed to find a ptable slot\n");
-          return E_NOPROC;
-      }
-      p = knew<proc>();
-      if (!p) {
-          return E_NOMEM;
-      }
-      p->id_ = tid;
-      // !!! difference is here
-      p->pid_ = pid_;
-      spinlock_guard guard_pt(pagetable_lock_);
-      p->init_user(pagetable_); // or just set it? idk
-      
-      *(p->regs_) = *regs;
-      p->regs_->reg_rax = 0;    
-      p->group_leader_ = this;
-      ptable[tid] = p;      
+    spinlock_guard guard_h(phierarchy_lock);
+    spinlock_guard guard(ptable_lock);
+    tid = find_free_tid();
+    if (tid < 0) {
+      // log_printf("failed to find a ptable slot\n");
+      return E_NOPROC;
+    }
+    p = knew<proc>();
+    if (!p) {
+      return E_NOMEM;
+    }
+    p->id_ = tid;
+    // !!! difference is here
+    p->pid_ = pid_;
+    p->group_ = this->group_;
+    spinlock_guard guard_pt(group_->pagetable_lock_);
+    p->init_user(group_->pagetable_); // or just set it? idk
+
+    assert(!group_->exiting);
+    group_->live_task_count_++;
+    {
+      spinlock_guard guard_task(group_->tasks_lock_);
+      group_->tasks_.push_front(p);
+    }
+
+    *(p->regs_) = *regs;
+    p->regs_->reg_rax = 0;
+    ptable[tid] = p;
   }
 
   // copy fd_table, increment refcounts
@@ -974,40 +996,50 @@ int proc::syscall_fork(regstate* regs) {
   int tid;
   proc* p;
   { 
-      spinlock_guard guard_h(phierarchy_lock);
-      spinlock_guard guard(ptable_lock);
-      tid = find_free_tid();
-      if (tid < 0) {
-          cleanup_pagetable(child_pagetable, addr);
-          // log_printf("failed to find a ptable slot\n");
-          return E_NOPROC;
-      }
-      p = knew<proc>();
-      if (!p) {
-          cleanup_pagetable(child_pagetable, addr);
-          return E_NOMEM;
-      }
-      p->id_ = tid;
-      p->pid_ = tid;
-      p->parent_id_ = this->id_;
-      spinlock_guard guard_pt(p->pagetable_lock_);
-      p->init_user(child_pagetable);
-      *(p->regs_) = *regs;
-      p->regs_->reg_rax = 0;
-      p->group_leader_ = p;
-      ptable[tid] = p;      
-      // log_printf("Parenting %ld\n", p->id_);
-      this->children.push_front(p);
-      // log_printf("Done parenting %ld\n", p->id_);
+    spinlock_guard guard_h(phierarchy_lock);
+    spinlock_guard guard(ptable_lock);
+    tid = find_free_tid();
+    if (tid < 0) {
+      cleanup_pagetable(child_pagetable, addr);
+      // log_printf("failed to find a ptable slot\n");
+      return E_NOPROC;
+    }
+    p = knew<proc>();
+    if (!p) {
+      cleanup_pagetable(child_pagetable, addr);
+      return E_NOMEM;
+    }
+    task_group* g = knew<task_group>();
+    if (!g) {
+      delete p;
+      cleanup_pagetable(child_pagetable, addr);
+      return E_NOMEM;
+    }
+    p->group_ = g;
+    p->id_ = tid;
+    p->pid_ = tid;
+
+    g->parent_id_ = pid_;
+    g->live_task_count_ = 1;
+    g->tasks_.push_front(p);
+
+    spinlock_guard guard_pt(g->pagetable_lock_);
+    p->init_user(child_pagetable);
+    *(p->regs_) = *regs;
+    p->regs_->reg_rax = 0;
+    ptable[tid] = p;
+    // log_printf("Parenting %ld\n", p->id_);
+    group_->children_.push_front(g);
+    // log_printf("Done parenting %ld\n", p->id_);
   }
 
   // copy fd_table, increment refcounts
-  spinlock_guard guard(fd_table_lock);
+  spinlock_guard guard(this->group_->fd_table_lock);
   for (int i = 0; i < N_FILEDESC; i++) {
-    p->fd_table[i] = fd_table[i];
-    if (p->fd_table[i] != FD_EMPTY) {
+    p->group_->fd_table_[i] = this->group_->fd_table_[i];
+    if (p->group_->fd_table_[i] != FD_EMPTY) {
       spinlock_guard guard_f(file_table_lock);
-      file_incref(&file_table[fd_table[i]]);
+      file_incref(&file_table[this->group_->fd_table_[i]]);
       // log_printf("ok: %i\n", i);
     }
   }
@@ -1026,19 +1058,46 @@ int proc::syscall_fork(regstate* regs) {
 //    Exit current process.
 
 void proc::syscall_texit(regstate* regs) {  
-    // log_printf("Process %ld is exiting...\n", this->id_);
-    
-    // regs_ = regs; // ??? inefficient? this state is never used
-        
-    {
-      spinlock_guard guard_h(phierarchy_lock);
-      spinlock_guard guard(ptable_lock);
-      // mark as zombie
-      this->pstate_ = ps_zombie;
+  {
+    spinlock_guard guard_h(phierarchy_lock);
+    spinlock_guard guard(ptable_lock);
+    // mark as zombie
+    pstate_ = ps_zombie;
+  }
+
+  {
+    spinlock_guard guard_h(phierarchy_lock);
+    spinlock_guard guard(ptable_lock);
+    x86_64_pagetable* pt = group_->pagetable_;
+    pid_t ppid = group_->parent_id_;
+    group_->pagetable_ = nullptr;
+    if (--group_->live_task_count_ == 0) {
+      log_printf("finishing exit process...\n");
+
+      set_pagetable(early_pagetable);
+      cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
+      regs_ = regs; // ??? inefficient? this state is never used
+
+      // wake up waiters (won't activate until lock is released)
+      proc_exit_wq.notify_all();
+      // notify parent if parent is sleeping
+      if (ppid != 1
+          && ptable[ppid] // valid since we have ptable_lock
+          && ptable[ppid]->pstate_ == proc::ps_blocked
+          ) {
+	assert(ptable[ppid]->group_->blocked_wq_ != -1);
+	spinlock_guard sleep_guard(sleep_lock);
+	ptable[ppid]->group_->child_exited_ = 1;
+	sleep_wq_wheel[ptable[ppid]->group_->blocked_wq_].notify_all();
+      }
+    } else {
+      int bruh = group_->live_task_count_;
+      log_printf("live task count: %i\n", bruh);
     }
+  }
     
-    // from this point on the proc struct and stack might be obliterated
-    yield_noreturn();
+  // from this point on the proc struct and stack might be obliterated
+  yield_noreturn();
 }
 
 
@@ -1046,73 +1105,47 @@ void proc::syscall_texit(regstate* regs) {
 //    Exit current process.
 
 void proc::syscall_exit(regstate* regs) {  
-    // log_printf("Process %ld is exiting...\n", this->id_);
+  // log_printf("Process %ld is exiting...\n", this->id_);
 
-    if (this->id_ == 1) {
-      process_halt();
-    }
+  if (this->id_ == 1) {
+    process_halt();
+  }
     
-    {
-      spinlock_guard guard_h(phierarchy_lock);  
-      // reparent kids
-      for (proc* p = this->children.front();
-	   p != nullptr;
-	   p = this->children.front()) {
-	// log_printf("Reparenting %d to init\n", p->id_);
-	p->parent_id_ = 1;
-	this->children.erase(p);
-      
-	spinlock_guard guard(ptable_lock);  
-	assert(ptable[1]);
-	ptable[1]->children.push_front(p);
-	// log_printf("Done reparenting %d\n", p->id_);
+  {
+    spinlock_guard guard_h(phierarchy_lock);
+    spinlock_guard guard(ptable_lock);
+    // reparent kids
+    for (task_group* g = group_->children_.pop_front();
+	 g != nullptr;
+	 g = group_->children_.pop_front()) {
+      // log_printf("Reparenting %d to init\n", p->id_);
+      g->parent_id_ = 1;
+      ptable[1]->group_->children_.push_front(g);
+      // log_printf("Done reparenting %d\n", p->id_);
+    }
+  }
+
+  {
+    // decrement fds
+    spinlock_guard guard_f(group_->fd_table_lock);
+    for (int i = 0; i < N_FILEDESC; i++) {
+      if (group_->fd_table_[i] != FD_EMPTY) {
+	close_fd(i, group_->fd_table_);
       }
     }
+  }
+
+  {
+    // Mark the group as exiting
+    spinlock_guard guard_h(phierarchy_lock);
+    spinlock_guard guard(ptable_lock);
+    // set exit status
+    group_->exit_status_ = regs->reg_rdi;
+    // mark group as exiting. However, the real sign of death is live_task_count == 0.
+    group_->exiting = 1;
+  }
     
-    x86_64_pagetable* pt;
-    {
-      spinlock_guard guard(ptable_lock);  
-      pt = this->pagetable_;
-      this->pagetable_ = nullptr;
-    }
-    
-    set_pagetable(early_pagetable);
-    cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
-    regs_ = regs; // ??? inefficient? this state is never used
-    
-    {
-      // decrement fds
-      spinlock_guard guard_f(fd_table_lock);
-      for (int i = 0; i < N_FILEDESC; i++) {
-	if (fd_table[i] != FD_EMPTY) {
-	  close_fd(i, fd_table);
-	}
-      }
-    }
-    
-    {
-      spinlock_guard guard_h(phierarchy_lock);
-      spinlock_guard guard(ptable_lock);
-      // mark as zombie
-      this->pstate_ = ps_zombie;
-      // set exit status
-      this->exit_status_ = regs->reg_rdi;
-      // wake up waiters (won't activate until lock is released)
-      proc_exit_wq.notify_all();
-      // notify parent if parent is sleeping
-      if (parent_id_ != 1
-	  && ptable[parent_id_] // valid since we have ptable_lock
-	  && ptable[parent_id_]->pstate_ == proc::ps_blocked
-	  ) {
-	assert(ptable[parent_id_]->blocked_wq_ != -1);
-	spinlock_guard sleep_guard(sleep_lock);
-	ptable[parent_id_]->child_exited_ = 1;
-	sleep_wq_wheel[ptable[parent_id_]->blocked_wq_].notify_all();
-      }
-    }
-    
-    // from this point on the proc struct and stack might be obliterated
-    yield_noreturn();
+  syscall_texit(regs);
 }
 
 
@@ -1134,21 +1167,21 @@ uintptr_t proc::syscall_read(regstate* regs) {
   }
 
   // Validate the read buffer.
-  if (valid_user_buffer(pagetable_, addr, sz, PTE_P | PTE_W | PTE_U) == -1) {
+  if (valid_user_buffer(group_->pagetable_, addr, sz, PTE_P | PTE_W | PTE_U) == -1) {
     return E_FAULT;
   }
-  
+
   file* f;
-  irqstate irqs;  
+  irqstate irqs;
   {
-    spinlock_guard guard(fd_table_lock);  
+    spinlock_guard guard(group_->fd_table_lock);
     // Check that fd is valid
-    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+    if (fd < 0 || fd >= N_FILEDESC || group_->fd_table_[fd] == FD_EMPTY) {
       return E_BADF;
     }
-  
+
     spinlock_guard guard_file(file_table_lock);
-    f = &(file_table[fd_table[fd]]);
+    f = &(file_table[group_->fd_table_[fd]]);
     irqs = f->file_lock.lock();
     if (f->type == FTYPE_NONE) {
       f->file_lock.unlock(irqs);
@@ -1180,21 +1213,21 @@ uintptr_t proc::syscall_write(regstate* regs) {
   }
 
   // Validate write buffer
-  if (valid_user_buffer(pagetable_, addr, sz, PTE_P | PTE_U) == -1) {
+  if (valid_user_buffer(group_->pagetable_, addr, sz, PTE_P | PTE_U) == -1) {
     return E_FAULT;
   }
 
   file* f;
   irqstate irqs;
   {
-    spinlock_guard guard(fd_table_lock);
+    spinlock_guard guard(group_->fd_table_lock);
     // Check that fd is valid
-    if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+    if (fd < 0 || fd >= N_FILEDESC || group_->fd_table_[fd] == FD_EMPTY) {
       return E_BADF;
     }
-  
+
     spinlock_guard guard_file(file_table_lock);
-    f = &(file_table[fd_table[fd]]);
+    f = &(file_table[group_->fd_table_[fd]]);
     irqs = f->file_lock.lock();
     if (f->type == FTYPE_NONE) {
       f->file_lock.unlock(irqs);
@@ -1262,15 +1295,15 @@ ssize_t proc::syscall_lseek(regstate* regs) {
 
   // file-getting boilerplate
   file* f;
-  irqstate irqs;  
-  spinlock_guard guard_fdtable(fd_table_lock);  
+  irqstate irqs;
+  spinlock_guard guard_fdtable(group_->fd_table_lock);
   // Check that fd is valid
-  if (fd < 0 || fd >= N_FILEDESC || fd_table[fd] == FD_EMPTY) {
+  if (fd < 0 || fd >= N_FILEDESC || group_->fd_table_[fd] == FD_EMPTY) {
     return E_BADF;
   }
-  
+
   spinlock_guard guard_ftable(file_table_lock);
-  f = &(file_table[fd_table[fd]]);
+  f = &(file_table[group_->fd_table_[fd]]);
   spinlock_guard guard_file(f->file_lock);    
   if (f->type == FTYPE_NONE) {
     return E_BADF;
@@ -1346,11 +1379,12 @@ static void memshow() {
 
   int search = 0;
   while ((!ptable[showing]
-	  || !ptable[showing]->pagetable_
-	  || ptable[showing]->pagetable_ == early_pagetable
+	  || !ptable[showing]->group_
+	  || !ptable[showing]->group_->pagetable_
+	  || ptable[showing]->group_->pagetable_ == early_pagetable
           || !(ptable[showing]->pstate_ == proc::ps_runnable
-	      || ptable[showing]->pstate_ == proc::ps_blocked
-	      || ptable[showing]->pstate_ == proc::ps_faulted)
+	       || ptable[showing]->pstate_ == proc::ps_blocked
+	       || ptable[showing]->pstate_ == proc::ps_faulted)
 	  )
 	 && search < NPROC) {
     showing = (showing + 1) % NPROC;
@@ -1393,33 +1427,33 @@ int proc::syscall_getusage(regstate* regs) {
 // proc::syscall_testkalloc(regs)
 //  Run a bunch of memory calls and then check that the memory state is valid.
 int proc::syscall_testkalloc(regstate* regs) {
-    // log_printf("pt entry\n");
-    proc* p = knew<proc>();
-    void* ptrs[12];
-    for (int i = 0; i < 6; i++) {
-        ptrs[i] = kalloc(0x1000u << i);
-    }
-    for (int i = 5; i >= 2; i--) {
-        kfree(ptrs[i]);
-    }
+  // log_printf("pt entry\n");
+  proc* p = knew<proc>();
+  void* ptrs[12];
+  for (int i = 0; i < 6; i++) {
+    ptrs[i] = kalloc(0x1000u << i);
+  }
+  for (int i = 5; i >= 2; i--) {
+    kfree(ptrs[i]);
+  }
     
-    validate_all_pages();
+  validate_all_pages();
     
-    for (int i = 6; i < 12; i++) {
-        ptrs[i] = kalloc(0x100u << i);
-    }
-    for (int i = 2; i >= 0; i--) {
-        kfree(ptrs[i]);
-    }
-    for (int i = 6; i < 12; i++) {
-        kfree(ptrs[i]);
-    }
-    delete p;
+  for (int i = 6; i < 12; i++) {
+    ptrs[i] = kalloc(0x100u << i);
+  }
+  for (int i = 2; i >= 0; i--) {
+    kfree(ptrs[i]);
+  }
+  for (int i = 6; i < 12; i++) {
+    kfree(ptrs[i]);
+  }
+  delete p;
     
-    validate_all_pages();
+  validate_all_pages();
     
-    // log_printf("pt final\n");
-    return 0;
+  // log_printf("pt final\n");
+  return 0;
 }
 
 // tick()

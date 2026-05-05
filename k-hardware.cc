@@ -552,7 +552,7 @@ void log_print_backtrace() {
 
 void log_print_backtrace(const proc* p) {
     log_printer pr;
-    print_backtrace(pr, *p->regs_, p->pagetable_);
+    print_backtrace(pr, *p->regs_, p->group_->pagetable_);
 }
 
 static void vpanic(const backtrace_regs& regs, x86_64_pagetable* pt,
@@ -609,7 +609,7 @@ void assert_fail(const char* file, int line, const char* msg,
     error_printer pr;
     pr.printf("%s:%d: kernel assertion '%s' failed\n", file, line, msg);
     backtrace_regs br = backtrace_proc_regs(p);
-    x86_64_pagetable* pt = p->pagetable_;
+    x86_64_pagetable* pt = p->group_->pagetable_;
     if (!br.reg_rip) {
         br = backtrace_current_regs();
     }

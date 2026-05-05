@@ -185,7 +185,7 @@ inline vmiter::vmiter(x86_64_pagetable* pt, uintptr_t va)
     find_impl(va, false);
 }
 inline vmiter::vmiter(const proc* p, uintptr_t va)
-    : vmiter(p->pagetable_, va) {
+    : vmiter(p->group_->pagetable_, va) {
 }
 inline x86_64_pagetable* vmiter::pagetable() const {
     return pt_;
@@ -318,7 +318,7 @@ inline void vmiter::invalidate_all() {
 }
 
 inline ptiter::ptiter(const proc* p)
-    : ptiter(p->pagetable_) {
+    : ptiter(p->group_->pagetable_) {
 }
 inline uintptr_t ptiter::va() const {
     return va_ & ~vmiter::lbits_mask(lbits_);

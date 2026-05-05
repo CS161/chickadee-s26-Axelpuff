@@ -25,28 +25,7 @@ struct elf_program;
 //
 //    Functions, constants, and definitions for the kernel.
 
-struct task_group {
-  // Shared resources
-  x86_64_pagetable* pagetable_ = nullptr;    // Process's page table // process
-  spinlock pagetable_lock_; // for synchronizing between multiple threads  // a lock for the pagetable
-  
-  unsigned int fd_table_[N_FILEDESC]; // process
-  spinlock fd_table_lock; // process
-
-  // Phone book
-  list_links task_links_;
-  list<proc, &proc::task_links_> tasks_;
-
-  // "It takes a village to raise a child"
-  pid_t parent_id_ = 0; // 0 should never be the parent id during runtime
-  list_links child_links_;
-  list<proc, &proc::child_links_> children_;
-  int exit_status_ = 0; // check out my music under the alias "Exit Status" on soundcloud (https://soundcloud.com/exit-status)
-  int blocked_wq_ = -1; // helps the child wake up this process by pointing to the queue it's sleeping on
-  bool child_exited_ = 0; // for early exit from msleep when child exits
-  
-  // unsigned long resume_counter_ = 0; // this is for that one part where I had to show there were less resumes
-}
+struct task_group;
 
 // Process (actually a task) descriptor type
 struct __attribute__((aligned(4096))) proc {
@@ -72,6 +51,7 @@ struct __attribute__((aligned(4096))) proc {
   // non-handout (therefore highly dangerous) members
   pid_t pid_ = 0;                            // Process ID (what process this task is associated with) // task
   task_group* group_;
+  list_links task_links_;
 
   // This member must come last
   int stack_bottom_canary = CANARY_VALUE; // task
@@ -102,11 +82,12 @@ struct __attribute__((aligned(4096))) proc {
   int syscall_clone(regstate* regs);
   int syscall_fork(regstate* regs);
   
+  [[noreturn]] void syscall_texit(regstate* regs);
   [[noreturn]] void syscall_exit(regstate* regs);
 
   // helpers for waitpid
-  proc* find_zombie_child(); // ??? should go to task_group?
-  int cleanup_and_return_status(proc* p);  
+  task_group* find_zombie_child(); // ??? should go to task_group?
+  int cleanup_and_return_status(task_group* p);  
 
   uintptr_t syscall_read(regstate* reg);
   uintptr_t syscall_write(regstate* reg);
@@ -124,6 +105,31 @@ struct __attribute__((aligned(4096))) proc {
 
 private:
   static int load_segment(const elf_program& ph, proc_loader& ld);
+};
+
+struct task_group {
+  // Shared resources
+  x86_64_pagetable* pagetable_ = nullptr;    // Process's page table // process
+  spinlock pagetable_lock_; // for synchronizing between multiple threads  // a lock for the pagetable
+  
+  unsigned int fd_table_[N_FILEDESC]; // process
+  spinlock fd_table_lock; // process
+
+  // Phone book
+  list<proc, &proc::task_links_> tasks_;
+  std::atomic<int> live_task_count_ = -1;
+  spinlock tasks_lock_; // process
+  int exiting = 0;
+
+  // "It takes a village to raise a child"
+  pid_t parent_id_ = 0; // 0 should never be the parent id during runtime. the void fathers no processes
+  list_links child_links_;
+  list<task_group, &task_group::child_links_> children_;
+  int exit_status_ = 0; // check out my music under the alias "Exit Status" on soundcloud (https://soundcloud.com/exit-status)
+  int blocked_wq_ = -1; // helps the child wake up this process by pointing to the queue it's sleeping on
+  bool child_exited_ = 0; // for early exit from msleep when child exits
+  
+  // unsigned long resume_counter_ = 0; // this is for that one part where I had to show there were less resumes
 };
 
 #define NPROC 16

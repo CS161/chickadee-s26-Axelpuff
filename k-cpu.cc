@@ -106,7 +106,7 @@ void cpustate::schedule() {
     }
 
     // run `current_`
-    set_pagetable(current_->pagetable_);
+    set_pagetable(current_->group_->pagetable_);
     // ++current_->resume_counter_;
     current_->resume(); // does not return
 }
@@ -159,6 +159,7 @@ void idle() {
 void cpustate::init_idle_task() {
     assert(!idle_task_);
     idle_task_ = knew<proc>();
+    idle_task_->group_ = knew<task_group>();
     idle_task_->init_kernel(idle);
     idle_task_->runq_cpu_ = cpuindex_;
     // Note that the idle task is not actually on the run queue.
