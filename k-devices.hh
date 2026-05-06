@@ -1,6 +1,7 @@
 #ifndef CHICKADEE_K_DEVICES_HH
 #define CHICKADEE_K_DEVICES_HH
 #include "kernel.hh"
+#include "k-vt100.hh"
 #include "k-wait.hh"
 #include "k-chkfs.hh"
 #include "k-chkfsiter.hh"
@@ -62,6 +63,11 @@ struct consolestate {
 
     void cursor();
     void cursor(bool show);
+
+    // References to the active VT100 terminal state and parser
+    // Implemented in k-vt100.cc alongside the global singletons
+    tty_state& tty();
+    vt_parser& parser();
 
  private:
     static consolestate console;

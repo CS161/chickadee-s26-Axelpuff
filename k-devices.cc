@@ -182,17 +182,20 @@ void keyboardstate::handle_interrupt() {
 
 void keyboardstate::maybe_echo(int ch) {
     if (state_ == input) {
-        consolestate::get().lock_.lock_noirq();
+        auto& csl = consolestate::get();
+        csl.lock_.lock_noirq();
         if (ch == 0x08) {
-            if (cursorpos > 0) {
-                cursorpos = cursorpos - 1;
-                console_printf(" ");
-                cursorpos = cursorpos - 1;
+            // Destructive backspace: move back, overwrite with space, move back
+            if (csl.tty().col_ > 0) {
+                csl.parser().feed("\b \b", 3);
             }
         } else if (ch != 0x04) {
-            console_printf(CS_ECHO "%c", ch);
+            // Route all other characters (including '\n') through the parser so
+            // tty_state.row_ and col_ stay in sync with the visual cursor
+            char c = (char) ch;
+            csl.parser().feed(&c, 1);
         }
-        consolestate::get().lock_.unlock_noirq();
+        csl.lock_.unlock_noirq();
     }
 }
 

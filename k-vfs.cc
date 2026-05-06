@@ -239,19 +239,16 @@ int kcfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
 }
   
 int kcfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
-  uintptr_t addr = reinterpret_cast<uintptr_t>(uio->buf);
   auto& csl = consolestate::get();
-  // Lock handoff
+  // Lock handoff: acquire console lock then release vnode lock
   spinlock_guard guard(csl.lock_);
-  vn->refcount_lock.unlock(irqs);  
-  size_t n = 0;
-  while (n < uio->sz) {
-    int ch = *reinterpret_cast<const char*>(addr);
-    ++addr;
-    ++n;
-    console_printf(CS_WHITE "%c", ch);
-  }
-  return n;
+  vn->refcount_lock.unlock(irqs);
+  // Route bytes through the VT100 parser so escape sequences update the
+  // tty_state and CGA framebuffer
+  // Kernel printf (console_printf) continues to write directly to the framebuffer,
+  // bypassing the parser
+  csl.parser().feed(reinterpret_cast<const char*>(uio->buf), uio->sz);
+  return static_cast<int>(uio->sz);
 }
 
 // off_t kcfs_vops::vop_getsize(vnode* vn) const {
