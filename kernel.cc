@@ -266,9 +266,9 @@ int proc::cleanup_and_return_status(task_group* g) {
     assert(g->tasks_.pop_front() == nullptr); // should only be one task in a process, but just in case...
     pid_t pid = p->id_;
     assert(p->pstate_ == ps_zombie);
-    p->pstate_ = ps_collected;
-    p->group_ = nullptr; // avoid double free
-    log_printf("Tried to null group and pid for task %d\n", pid);
+    // p->pstate_ = ps_collected;
+    // p->group_ = nullptr; // avoid double free
+    // log_printf("Tried to null group and pid for task %d\n", pid);
     ptable[pid] = nullptr;
         
     delete p;
@@ -1126,14 +1126,9 @@ void proc::syscall_texit(regstate* regs) {
         ptable[ppid]->group_->child_exited_ = 1;
         sleep_wq_wheel[ptable[ppid]->group_->blocked_wq_].notify_all();
       }
-    } else if (id_ == pid_) {
-      // group leader only freed on final exit
-      pstate_ = ps_zombie;
     } else {
       int bruh = group_->live_task_count_;
       log_printf("live task count: %i\n", bruh);
-      // Non-last thread: free the ptable slot immediately so it can be reused.
-      // The proc struct itself is deleted by the scheduler after context switch.
       {
         spinlock_guard tasks_guard(group_->tasks_lock_);
         task_links_.erase();
@@ -1149,6 +1144,7 @@ void proc::syscall_texit(regstate* regs) {
   // Free old page table after releasing all locks
   if (pt_to_free) {
     cleanup_pagetable(pt_to_free, MEMSIZE_VIRTUAL);
+    // regs_ = regs;
   }
 
   // from this point on the proc struct and stack might be obliterated
