@@ -188,8 +188,10 @@ static void implicit_exit_thr(void*) {
 // many_threads: check that we can create at least 500 threads
 
 static void many_threads_thr(void*) {
-    assert_eq(sys_getpid(), my_pid);
+    assert_eq(sys_getpid(), my_pid); // pid_t my_tid = sys_gettid();
     sys_yield();
+    asm volatile("nop");
+    console_printf("innocent message\n");
 }
 
 [[noreturn]] static void many_threads() {

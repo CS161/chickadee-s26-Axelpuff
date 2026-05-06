@@ -350,6 +350,8 @@ void* kalloc(size_t sz) {
     // if ptr is still null, return ptr (null)
     if (!addr) {
         log_printf("Out of memory\n");
+        log_printf("Allocated pages: %zu\n", allocated_pages);
+        log_printf("Total pages: %zu\n", total_physpages);
         page_lock.unlock(irqs);
         return nullptr;
     }

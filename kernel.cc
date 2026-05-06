@@ -262,8 +262,13 @@ int proc::cleanup_and_return_status(task_group* g) {
   
   spinlock_guard guard(group_->tasks_lock_);
   for (proc* p = g->tasks_.pop_front(); p != nullptr; p = g->tasks_.pop_front()) {
+    assert(p->id_ == p->pid_);
+    assert(g->tasks_.pop_front() == nullptr); // should only be one task in a process, but just in case...
     pid_t pid = p->id_;
-    p->pstate_ = ps_collected; // pointless?
+    assert(p->pstate_ == ps_zombie);
+    p->pstate_ = ps_collected;
+    p->group_ = nullptr; // avoid double free
+    log_printf("Tried to null group and pid for task %d\n", pid);
     ptable[pid] = nullptr;
         
     delete p;
@@ -333,6 +338,12 @@ uintptr_t proc::syscall(regstate* regs) {
   // Record most recent user-mode %rip.
   recent_user_rip_ = regs->reg_rip;
 
+  // if the process group is exiting, this thread must exit before returning to user space
+  // safe to check here because we haven't yet modified any shared state for this syscall
+  if (group_->exiting) {
+    syscall_texit(regs);
+  }
+
   switch (regs->reg_rax) {
 
   case SYSCALL_CONSOLETYPE:
@@ -352,27 +363,43 @@ uintptr_t proc::syscall(regstate* regs) {
     }
     return -1;
 
-  case SYSCALL_GETPID:
+  case SYSCALL_GETPID: {
+    log_printf("process %d is getpidding\n", id_);
+    return pid_;
+  }
+
+  case SYSCALL_GETTID:
     return id_;
 
-  case SYSCALL_YIELD:
+  case SYSCALL_YIELD: {
+    log_printf("process %d is yielding\n", id_);
     yield();
+    log_printf("process %d is between yielding and returning\n", id_);
+    log_printf("rsp is %p\n", (void*)regs->reg_rsp);
     return 0;
+  }
 
   case SYSCALL_PAGE_ALLOC: {
     uintptr_t addr = regs->reg_rdi;
     if (addr >= VA_LOWEND || (addr & 0xFFF) != 0) {
       return E_FAULT;
     }
+    // Allocate before taking the lock so we don't hold a spinlock during kalloc
+    void* pg = kalloc(PAGESIZE);
+    if (!pg) {
+      return E_NOMEM;
+    }
     // The handout code does not allow allocating a page over an existing
     // page. If you do allow this, beware of memory leaks and, especially,
     // TLB invalidation (see the memory iterator documentation).
+    spinlock_guard guard_pt(group_->pagetable_lock_);
     vmiter it(this, addr);
     if (it.present()) {
+      kfree(pg);
       return E_BUSY;
     }
-    void* pg = kalloc(PAGESIZE);
-    if (!pg || it.try_map(ka2pa(pg), PTE_PWU) < 0) {
+    if (it.try_map(ka2pa(pg), PTE_PWU) < 0) {
+      kfree(pg);
       return E_NOMEM;
     }
     return 0;
@@ -810,6 +837,10 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_TESTKALLOC:
     return syscall_testkalloc(regs);
 
+  case SYSCALL_TEXIT:
+    syscall_texit(regs);
+    break;  // not reached
+
   default:
     // no such system call
     log_printf("%d: no such system call %u\n", id_, regs->reg_rax);
@@ -963,31 +994,38 @@ int proc::syscall_fork(regstate* regs) {
   }
 
   // copy process code and data
+
+  // Hold pagetable_lock_ for the entire walk to get a consistent snapshot of
+  // the parent's address space (a concurrent SYSCALL_PAGE_ALLOC could otherwise
+  // add a mapping mid-fork)
   uintptr_t addr = 0;
-  for (; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE) {
-    vmiter it(this, addr);
-    if (it.writable() && addr != CONSOLE_ADDR) {
-      assert(it.user());
-      // alloc new physical memory for copy of parent process data
-      void* pa = kalloc(PAGESIZE);
-      if (!pa) {
-	cleanup_pagetable(child_pagetable, addr);
-	return E_NOMEM;
+  {
+    spinlock_guard guard_pt(group_->pagetable_lock_);
+    for (; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE) {
+      vmiter it(this, addr);
+      if (it.writable() && addr != CONSOLE_ADDR) {
+	assert(it.user());
+	// alloc new physical memory for copy of parent process data
+	void* pa = kalloc(PAGESIZE);
+	if (!pa) {
+	  cleanup_pagetable(child_pagetable, addr);
+	  return E_NOMEM;
+	}
+	int r = vmiter(child_pagetable, it.va()).try_map(pa, it.perm());
+	if (r != 0) {
+	  kfree(pa);
+	  cleanup_pagetable(child_pagetable, addr);
+	  return E_NOMEM;
+	}
+	memcpy(pa, reinterpret_cast<void *>(addr), PAGESIZE);
       }
-      int r = vmiter(child_pagetable, it.va()).try_map(pa, it.perm());
-      if (r != 0) {
-	kfree(pa);
-	cleanup_pagetable(child_pagetable, addr);
-	return E_NOMEM;
-      }
-      memcpy(pa, reinterpret_cast<void *>(addr), PAGESIZE);
-    }
-    else if (it.user()) {
-      // copy read-only segments
-      int r = vmiter(child_pagetable, it.va()).try_map(it.pa(), it.perm());
-      if (r != 0) {
-	cleanup_pagetable(child_pagetable, addr);
-	return E_NOMEM;
+      else if (it.user()) {
+	// copy read-only segments
+	int r = vmiter(child_pagetable, it.va()).try_map(it.pa(), it.perm());
+	if (r != 0) {
+	  cleanup_pagetable(child_pagetable, addr);
+	  return E_NOMEM;
+	}
       }
     }
   }
@@ -1055,28 +1093,26 @@ int proc::syscall_fork(regstate* regs) {
 // int get_ptable_index(proc* p)
 
 // proc::syscall_texit(regs)
-//    Exit current process.
+//    Exit current task.
 
-void proc::syscall_texit(regstate* regs) {  
+void proc::syscall_texit(regstate* regs) {
+  log_printf("process %d is exiting\n", id_);
+  x86_64_pagetable* pt_to_free = nullptr;
   {
     spinlock_guard guard_h(phierarchy_lock);
     spinlock_guard guard(ptable_lock);
-    // mark as zombie
     pstate_ = ps_zombie;
-  }
-
-  {
-    spinlock_guard guard_h(phierarchy_lock);
-    spinlock_guard guard(ptable_lock);
-    x86_64_pagetable* pt = group_->pagetable_;
     pid_t ppid = group_->parent_id_;
-    group_->pagetable_ = nullptr;
     if (--group_->live_task_count_ == 0) {
       log_printf("finishing exit process...\n");
 
+      {
+        spinlock_guard guard_pt(group_->pagetable_lock_);
+        pt_to_free = group_->pagetable_;
+        group_->pagetable_ = nullptr;
+      }
+      // Switch off the process page table before it is freed
       set_pagetable(early_pagetable);
-      cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
-      regs_ = regs; // ??? inefficient? this state is never used
 
       // wake up waiters (won't activate until lock is released)
       proc_exit_wq.notify_all();
@@ -1085,17 +1121,36 @@ void proc::syscall_texit(regstate* regs) {
           && ptable[ppid] // valid since we have ptable_lock
           && ptable[ppid]->pstate_ == proc::ps_blocked
           ) {
-	assert(ptable[ppid]->group_->blocked_wq_ != -1);
-	spinlock_guard sleep_guard(sleep_lock);
-	ptable[ppid]->group_->child_exited_ = 1;
-	sleep_wq_wheel[ptable[ppid]->group_->blocked_wq_].notify_all();
+        assert(ptable[ppid]->group_->blocked_wq_ != -1);
+        spinlock_guard sleep_guard(sleep_lock);
+        ptable[ppid]->group_->child_exited_ = 1;
+        sleep_wq_wheel[ptable[ppid]->group_->blocked_wq_].notify_all();
       }
+    } else if (id_ == pid_) {
+      // group leader only freed on final exit
+      pstate_ = ps_zombie;
     } else {
       int bruh = group_->live_task_count_;
       log_printf("live task count: %i\n", bruh);
+      // Non-last thread: free the ptable slot immediately so it can be reused.
+      // The proc struct itself is deleted by the scheduler after context switch.
+      {
+        spinlock_guard tasks_guard(group_->tasks_lock_);
+        task_links_.erase();
+      }
+
+      ptable[id_] = nullptr;
+      group_ = nullptr; // avoid double free
+      log_printf("Tried to null group and pid for task %d\n", id_);
+      pstate_ = ps_collected;
     }
   }
-    
+
+  // Free old page table after releasing all locks
+  if (pt_to_free) {
+    cleanup_pagetable(pt_to_free, MEMSIZE_VIRTUAL);
+  }
+
   // from this point on the proc struct and stack might be obliterated
   yield_noreturn();
 }
