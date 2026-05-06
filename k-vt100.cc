@@ -14,6 +14,115 @@ tty_state& consolestate::tty() { return the_tty; }
 vt_parser& consolestate::parser() { return the_parser; }
 
 
+// line_discipline methods
+
+void line_discipline::ring_push(char c) {
+    if (ring_len_ < ldbuf_cap) {
+        size_t slot = (ring_pos_ + ring_len_) % ldbuf_cap;
+        ring_buf_[slot] = c;
+        ++ring_len_;
+    }
+    // Drop silently when full.
+}
+
+void line_discipline::echo_char(char c) {
+    auto& csl = consolestate::get();
+    csl.lock_.lock_noirq();
+    if (c == '\b' || c == char(0x08)) {
+        if (csl.tty().col_ > 0) {
+            csl.parser().feed("\b \b", 3);
+        }
+    } else if (c != char(0x04)) {
+        csl.parser().feed(&c, 1);
+    }
+    csl.lock_.unlock_noirq();
+}
+
+// push_byte
+//    Feed one character from the keyboard interrupt handler.
+//    Called while keyboardstate::lock_ is held; acquires ldisc lock_
+//    internally (lock order: kbd -> ldisc -> csl).
+void line_discipline::push_byte(int ch) {
+    spinlock_guard guard(lock_);
+
+    bool icanon = ktermios_->c_lflag & ICANON;
+    bool echo   = ktermios_->c_lflag & ECHO;
+
+    if (icanon) {
+        if (ch == '\b' || ch == 0x7F) { // backspace
+            if (canon_len_ > 0) {
+                --canon_len_;
+                if (echo) {
+                    echo_char('\b');
+                }
+            }
+            return;
+        }
+        if (ch == '\r') {
+            ch = '\n';
+        }
+        if (canon_len_ < ldbuf_cap) {
+            canon_buf_[canon_len_++] = (char) ch;
+            if (echo && ch != 0x04) {
+                echo_char((char) ch);
+            }
+        }
+        // Flush canonical buffer to ring on newline or Ctrl-D.
+        if (ch == '\n' || ch == 0x04) {
+            for (size_t i = 0; i < canon_len_; ++i) {
+                ring_push(canon_buf_[i]);
+            }
+            canon_len_ = 0;
+            wq_.notify_all();
+        }
+    } else {
+        // Raw mode: every byte goes directly to the ring.
+        if (ch == '\r') {
+            ch = '\n';
+        }
+        ring_push((char) ch);
+        if (echo) {
+            echo_char((char) ch);
+        }
+        wq_.notify_all();
+    }
+}
+
+// read_locked
+//    Consume up to sz bytes from the ring into buf.
+//    Caller holds lock_ via guard on entry and on return.
+//    Blocks until at least one byte is available.
+//    In ICANON mode, stops at end of line (\n or Ctrl-D).
+ssize_t line_discipline::read_locked(char* buf, size_t sz,
+                                      spinlock_guard& guard) {
+    if (sz == 0) {
+        return 0;
+    }
+    waiter w;
+    w.wait_until(wq_, [&] { return ring_len_ > 0; }, guard);
+
+    size_t n = 0;
+    while (ring_len_ > 0 && n < sz) {
+        char c = ring_buf_[ring_pos_];
+        if (c == char(0x04)) {
+            // Ctrl-D: consume only when no bytes precede it in this read
+            if (n == 0) {
+                ring_pos_ = (ring_pos_ + 1) % ldbuf_cap;
+                --ring_len_;
+            }
+            break;
+        }
+        buf[n++] = c;
+        ring_pos_ = (ring_pos_ + 1) % ldbuf_cap;
+        --ring_len_;
+        if ((ktermios_->c_lflag & ICANON) && c == '\n') {
+            break;  // deliver at most one canonical line per read
+        }
+    }
+    return (ssize_t) n;
+}
+
+
 // tty_state methods
 
 void tty_state::reset() {

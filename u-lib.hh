@@ -308,12 +308,6 @@ inline pid_t sys_gettid() {
 // sys_clone(function, arg, stack_top)
 //    Create a new thread running `function` with `arg`, starting at
 //    stack address `stack_top`. Returns the new thread's thread ID.
-//
-//    In the context of the new thread, when the `function` returns,
-//    the thread should call `sys_texit`.
-//
-//    We recommend you implement `sys_clone` in `u-lib.cc`, not this
-//    header file.
 pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top);
 
 // sys_texit()
@@ -334,6 +328,56 @@ inline int sys_getusage(usage* u) {
 //    Test kalloc
 inline int sys_testkalloc() {
     return make_syscall(SYSCALL_TESTKALLOC);
+}
+
+// sys_tcgetattr(fd, t)
+//    Copy terminal attributes for `fd` into `*t`.
+//    Returns 0 on success, E_NOTTY if `fd` is not a TTY, E_BADF if invalid.
+inline int sys_tcgetattr(int fd, struct termios* t) {
+    int r = (int) make_syscall(SYSCALL_TCGETATTR, fd,
+                               reinterpret_cast<uintptr_t>(t));
+    asm volatile ("" ::: "memory");  // kernel wrote to *t
+    return r;
+}
+
+// sys_tcsetattr(fd, optional_actions, t)
+//    Install terminal attributes from `*t` on `fd`.
+//    Returns 0 on success, E_NOTTY if `fd` is not a TTY.
+inline int sys_tcsetattr(int fd, int optional_actions, const struct termios* t) {
+    access_memory(t);
+    return make_syscall(SYSCALL_TCSETATTR, fd, optional_actions,
+                        reinterpret_cast<uintptr_t>(t));
+}
+
+// sys_ioctl(fd, request, arg)
+//    Generic device control. Delegates to the vnode's ioctl method.
+//    Returns E_NOTTY by default for non-TTY files.
+inline int sys_ioctl(int fd, unsigned long request, uintptr_t arg = 0) {
+    int r = (int) make_syscall(SYSCALL_IOCTL, fd, request, arg);
+    // The kernel may have written to *arg (e.g. TIOCGWINSZ writes struct winsize).
+    // Force the compiler to reload any memory that might have changed.
+    asm volatile ("" ::: "memory");
+    return r;
+}
+
+// sys_sigaction(sig, act, oldact)
+//    Install a handler for signal `sig` from `*act`.
+//    If `oldact != nullptr`, stores the previous disposition there.
+//    Returns 0 on success, E_INVAL for an uncatchable or out-of-range signal.
+inline int sys_sigaction(int sig, const struct sigaction* act,
+                         struct sigaction* oldact) {
+    if (act) access_memory(act);
+    if (oldact) clobber_memory(oldact);
+    return make_syscall(SYSCALL_SIGACTION, sig,
+                        reinterpret_cast<uintptr_t>(act),
+                        reinterpret_cast<uintptr_t>(oldact));
+}
+
+// sys_kill(pid, sig)
+//    Send signal `sig` to process `pid`.
+//    Returns 0 on success, E_SRCH if the process does not exist.
+inline int sys_kill(pid_t pid, int sig) {
+    return make_syscall(SYSCALL_KILL, pid, sig);
 }
 
 // dprintf(fd, format, ...)

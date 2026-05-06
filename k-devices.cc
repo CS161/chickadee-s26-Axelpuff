@@ -127,83 +127,32 @@ void keyboardstate::handle_interrupt() {
 
     int ch;
     while ((ch = keyboard_readc()) >= 0) {
-        bool want_eol = false;
         switch (ch) {
-        case 0: // try again
+        case 0:  // no key pressed, try again
             break;
 
-        case 0x08: // Ctrl-H
-            if (eol_ < len_) {
-                --len_;
-                maybe_echo(ch);
-            }
-            break;
-
-        case 0x11: // Ctrl-Q
+        case 0x11:  // Ctrl-Q: always power off
             poweroff();
             break;
 
-        case 0x03: // Ctrl-C
+        case 0x03:  // Ctrl-C
         case 'q':
             if (state_ != input) {
                 poweroff();
             }
-            goto normal_char;
-
-        case '\r':
-            ch = '\n';
-            want_eol = true;
-            goto normal_char;
-
-        case 0x04: // Ctrl-D
-        case '\n':
-            want_eol = true;
-            goto normal_char;
+            [[fallthrough]];
 
         default:
-        normal_char:
-            if (len_ < sizeof(buf_)) {
-                unsigned slot = (pos_ + len_) % sizeof(buf_);
-                buf_[slot] = ch;
-                ++len_;
-                if (want_eol) {
-                    eol_ = len_;
-                }
-                maybe_echo(ch);
-            }
+            // All other characters are fed to the line discipline,
+            // which handles cooked/raw logic and echoing. push_byte()
+            // acquires ldisc.lock_ internally.
+            consolestate::get().tty().ldisc_.push_byte(ch);
             break;
         }
     }
 
-    wq_.notify_all();
     lock_.unlock(irqs);
     lapicstate::get().ack();
-}
-
-void keyboardstate::maybe_echo(int ch) {
-    if (state_ == input) {
-        auto& csl = consolestate::get();
-        csl.lock_.lock_noirq();
-        if (ch == 0x08) {
-            // Destructive backspace: move back, overwrite with space, move back
-            if (csl.tty().col_ > 0) {
-                csl.parser().feed("\b \b", 3);
-            }
-        } else if (ch != 0x04) {
-            // Route all other characters (including '\n') through the parser so
-            // tty_state.row_ and col_ stay in sync with the visual cursor
-            char c = (char) ch;
-            csl.parser().feed(&c, 1);
-        }
-        csl.lock_.unlock_noirq();
-    }
-}
-
-void keyboardstate::consume(size_t n) {
-    assert(n <= len_);
-    pos_ = (pos_ + n) % sizeof(buf_);
-    len_ -= n;
-    eol_ -= n;
 }
 
 

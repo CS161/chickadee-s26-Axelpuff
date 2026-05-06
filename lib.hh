@@ -326,6 +326,18 @@ struct bitset_view {
 #define SYSCALL_GETPPID         132
 #define SYSCALL_WAITPID         133
 
+// termios / raw-mode
+#define SYSCALL_TCGETATTR       134
+#define SYSCALL_TCSETATTR       135
+
+// ioctl
+#define SYSCALL_IOCTL           136
+
+// signals
+#define SYSCALL_SIGACTION       137
+#define SYSCALL_KILL            138
+#define SYSCALL_SIGRETURN       139
+
 // System call error return values
 
 #define E_AGAIN         -11        // Try again
@@ -345,6 +357,7 @@ struct bitset_view {
 #define E_NOMEM         -12        // Out of memory
 #define E_NOSPC         -28        // No space left on device
 #define E_NOSYS         -38        // Invalid system call number
+#define E_NOTTY         -25        // Not a typewriter (fd is not a TTY)
 #define E_NXIO          -6         // No such device or address
 #define E_OVERFLOW      -75        // Value too large for data type
 #define E_PERM          -1         // Operation not permitted
@@ -387,6 +400,96 @@ struct usage {
     unsigned long time;
     size_t free_pages;
     size_t allocated_pages;
+};
+
+
+// struct termios
+//    POSIX terminal attributes. Layout matches glibc x86-64 struct termios
+//    so that ncurses can copy through tcsetattr without adjustment.
+//    Fields not marked "consulted" are accepted by tcsetattr and stored
+//    but are not read back by the line discipline (effectively non-functional).
+
+typedef unsigned int  tcflag_t;
+typedef unsigned char cc_t;
+
+#define NCCS 19
+struct termios {
+    tcflag_t c_iflag;           // input flags
+    tcflag_t c_oflag;           // output flags
+    tcflag_t c_cflag;           // control flags (not currently consulted)
+    tcflag_t c_lflag;           // local flags
+    cc_t     c_line;            // line discipline (ignored)
+    cc_t     c_cc[NCCS];        // control characters
+};
+
+// c_lflag bits consulted by the line discipline
+#define ISIG    0000001     // generate signals on INTR/QUIT/SUSP
+#define ICANON  0000002     // canonical (line-buffered) input
+#define ECHO    0000010     // echo input characters
+#define ECHOE   0000020     // echo ERASE as BS-SP-BS
+#define ECHOK   0000040     // echo KILL
+#define ECHONL  0000100     // echo NL even when ECHO is cleared
+#define NOFLSH  0000200     // do not flush after signal
+#define IEXTEN  0100000     // enable extended input processing
+
+// c_iflag bits consulted by the line discipline
+#define ICRNL   0000400     // translate CR to NL on input
+#define IXON    0002000     // enable XON/XOFF output flow control
+
+// c_oflag bits consulted by the output path
+#define OPOST   0000001     // enable output processing
+#define ONLCR   0000004     // translate NL to CR-NL on output
+
+// c_cc indices (Linux x86-64 layout; must match glibc)
+#define VINTR   0           // interrupt character (sends SIGINT)
+#define VQUIT   1           // quit character (sends SIGQUIT)
+#define VERASE  2           // erase (backspace) character
+#define VKILL   3           // kill-line character
+#define VEOF    4           // end-of-file (typically ^D)
+#define VTIME   5           // read timeout in deciseconds (noncanonical)
+#define VMIN    6           // minimum bytes per read (noncanonical)
+
+// optional_actions argument to sys_tcsetattr
+#define TCSANOW     0       // apply immediately
+#define TCSADRAIN   1       // apply after draining output
+#define TCSAFLUSH   2       // apply after draining; discard pending input
+
+
+// struct winsize
+struct winsize {
+    unsigned short ws_row;      // terminal rows
+    unsigned short ws_col;      // terminal columns
+    unsigned short ws_xpixel;   // pixel width  (unused for now)
+    unsigned short ws_ypixel;   // pixel height (unused for now)
+};
+
+// ioctl request numbers for TTY window-size operations (Linux x86-64 values)
+#define TIOCGWINSZ  0x5413      // read window size into struct winsize *
+#define TIOCSWINSZ  0x5414      // set window size from struct winsize *
+
+
+// Signal numbers
+#define SIGHUP      1
+#define SIGINT      2
+#define SIGQUIT     3
+#define SIGKILL     9
+#define SIGUSR1     10
+#define SIGUSR2     12
+#define SIGTERM     15
+#define SIGSTOP     19
+#define SIGWINCH    28
+
+// SIG_DFL / SIG_IGN sentinels for struct sigaction::sa_handler
+#define SIG_DFL     ((void(*)(int)) 0)   // default disposition (usually terminate)
+#define SIG_IGN     ((void(*)(int)) 1)   // ignore the signal
+
+// struct sigaction
+//    Kernel honors sa_handler, while sa_mask and sa_flags are stored but
+//    not yet consulted. SIGKILL and SIGSTOP cannot be caught or ignored.
+struct sigaction {
+    void (*sa_handler)(int);    // handler function, SIG_DFL, or SIG_IGN
+    unsigned long sa_mask;      // signals to block during handler (reserved)
+    unsigned long sa_flags;     // flags (reserved; stored but not consulted)
 };
 
 

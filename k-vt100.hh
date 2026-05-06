@@ -1,6 +1,57 @@
 #pragma once
 #include "kernel.hh"
 
+// line_discipline
+//    Bridges raw keycodes from `keyboardstate` to bytes delivered by
+//    `read()` on the TTY. Behavior controlled by `tty_state::ktermios_` flags
+//    (ICANON, ECHO, ISIG).
+struct line_discipline {
+    static constexpr size_t ldbuf_cap = 256;
+
+    // Points to the owning tty_state::ktermios_, set by tty_state's constructor
+    const struct termios* ktermios_ = nullptr;
+
+    char   canon_buf_[ldbuf_cap]; // current line being edited (ICANON)
+    size_t canon_len_ = 0;
+
+    char   ring_buf_[ldbuf_cap];  // ready-to-read ring buffer
+    size_t ring_pos_ = 0;
+    size_t ring_len_ = 0;
+
+    spinlock  lock_;
+    wait_queue wq_;
+
+    // Feed one raw character from the keyboard interrupt handler
+    // Caller must hold keyboardstate::lock_
+    void push_byte(int ch);
+
+    // Consume up to sz bytes into buf, blocks until data is available
+    // Caller must hold lock_ via guard, holds lock_ on return
+    ssize_t read_locked(char* buf, size_t sz, spinlock_guard& guard);
+
+ private:
+    void ring_push(char c);
+    void echo_char(char c);
+};
+
+// default_ktermios
+//    Construct the canonical mode initial termios that TCGETATTR returns.
+//    Called once as a default member initializer in tty_state.
+static inline struct termios default_ktermios() {
+    struct termios t = {};
+    t.c_iflag = ICRNL | IXON;
+    t.c_oflag = OPOST | ONLCR;
+    t.c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOK | IEXTEN;
+    t.c_cc[VINTR]  = 3;    // ^C
+    t.c_cc[VQUIT]  = 28;   // ^backslash
+    t.c_cc[VERASE] = 127;  // DEL
+    t.c_cc[VKILL]  = 21;   // ^U
+    t.c_cc[VEOF]   = 4;    // ^D
+    t.c_cc[VTIME]  = 0;
+    t.c_cc[VMIN]   = 1;
+    return t;
+}
+
 // tty_state
 //    All emulated-terminal state for a single TTY: logical cursor row
 //    and column (independent of the CGA hardware cursor), saved cursor
@@ -26,6 +77,13 @@ struct tty_state {
     int scroll_top_ = 0;             // scroll region top row (0-based, inclusive)
     int scroll_bot_ = CONSOLE_ROWS - 1; // scroll region bottom row (0-based, inclusive)
     bool autowrap_ = true;           // DEC autowrap mode
+
+    // POSIX termios block
+    struct termios ktermios_ = default_ktermios();
+
+    line_discipline ldisc_;          // input line discipline
+
+    tty_state() { ldisc_.ktermios_ = &ktermios_; }
 
     void reset();
     void put_char(char c);

@@ -41,7 +41,7 @@ void kernel_start(const char* command) {
       spinlock_guard guard_file(file_table[i].file_lock);
       file_table[i].type = FTYPE_NONE;
     }
-    init_kc_file(&file_table[KC_FILE_NUM]);
+    init_tty_file(&file_table[KC_FILE_NUM]);
   }
   
   // start init
@@ -266,17 +266,6 @@ int cleanup_and_return_status(proc* p, task_group* g) {
   return exit_status;
 }
 
-// caller should validate that fd is in range and not empty
-// caller should hold fd_table_lock (must be acquired before file_table_lock in all cases)
-int close_fd(int fd, unsigned int* fd_table) {
-  {
-    spinlock_guard guard(file_table_lock);
-    file_decref(&file_table[fd_table[fd]]);
-  }
-  fd_table[fd] = FD_EMPTY;
-  return 0;
-}
-
 // returns either sz or -1
 int valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t addr, size_t sz, int flags) {
   if (VA_LOWEND - sz < addr) {
@@ -287,6 +276,102 @@ int valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t addr, size_t sz, in
     return -1;
   }
   return sz;
+}
+
+// proc::deliver_pending_signals
+//    Check for pending, unmasked signals and deliver the highest-priority one.
+//    Called before returning to userspace from syscalls that may mark a signal
+//    pending.
+//
+
+//
+
+void proc::deliver_pending_signals(regstate* regs, uintptr_t syscall_retval) {
+  uint32_t pending = group_->sig_pending_;
+  if (!pending) {
+    return;
+  }
+
+  // Pick the lowest-numbered pending signal
+  int signo = __builtin_ctz(pending);
+  if (signo <= 0 || signo >= task_group::NSIG) {
+    return;
+  }
+
+  void (*handler)(int) = group_->sig_handlers_[signo];
+
+  // Clear the pending bit before delivery so re-entrant delivery is safe
+  group_->sig_pending_ &= ~(1u << signo);
+
+  // SIG_DFL (nullptr / 0) or SIG_IGN (1): no frame to build.
+  // Full SIG_DFL semantics (process termination) are deferred; for now
+  // treat it as ignore so that signals without installed handlers don't
+  // crash the process during early bring-up.
+  if (reinterpret_cast<uintptr_t>(handler) <= 1) {
+    return;
+  }
+
+  // Build signal frame on user stack (240 bytes, 16-byte aligned)
+  //    frame_base + 0:  code[32]      thunk + entry machine code
+  //    frame_base + 32: handler(8)    handler function pointer
+  //    frame_base + 40: signo(8)      signal number (read via pop rdi)
+  //    frame_base + 48: saved_regs    copy of *regs before delivery
+  static constexpr size_t FRAME_SIZE = 240;
+  uintptr_t frame_base = (regs->reg_rsp - FRAME_SIZE) & ~uintptr_t{15};
+
+  // Validate the target region is user-writable; skip delivery if invalid
+  if (valid_user_buffer(group_->pagetable_, frame_base,
+                        FRAME_SIZE, PTE_P | PTE_U | PTE_W) < 0) {
+    return;
+  }
+
+  // Thunk (executed with rip=frame_base, rsp=frame_base+40)
+  static const uint8_t thunk[32] = {
+      // pop rdi: rdi <- signo, rsp -> frame+48
+      0x5F,                               
+      // call [rip+0x19]: handler at +32, pushes frame+7 at [frame+40],
+      // rsp -> frame+40
+      0xFF, 0x15, 0x19, 0x00, 0x00, 0x00, 
+      // mov eax, 139 (SYSCALL_SIGRETURN)
+      0xB8, 0x8B, 0x00, 0x00, 0x00,       
+      // syscall
+      0x0F, 0x05,                          
+      // nop padding to 32 bytes:
+      0x90, 0x90, 0x90, 0x90, 0x90,
+      0x90, 0x90, 0x90, 0x90, 0x90,
+      0x90, 0x90, 0x90, 0x90, 0x90,
+      0x90, 0x90, 0x90
+      // On SIGRETURN: regs->reg_rsp == frame_base+48 (saved_regs there)
+  };
+
+  // Write the frame to user stack
+  memcpy(reinterpret_cast<void*>(frame_base), thunk, 32);
+
+  *reinterpret_cast<uintptr_t*>(frame_base + 32) =
+      reinterpret_cast<uintptr_t>(handler);
+
+  *reinterpret_cast<uint64_t*>(frame_base + 40) = (uint64_t) signo;
+
+  // Save current register state so sigreturn can restore it
+  regstate* saved = reinterpret_cast<regstate*>(frame_base + 48);
+  *saved = *regs;
+  saved->reg_rax = syscall_retval;  // what rax should be after sigreturn
+
+  // Redirect execution to the thunk; ensure interrupts are enabled
+  regs->reg_rip    = frame_base;
+  regs->reg_rsp    = frame_base + 40;   // pop rdi reads [rsp] = signo
+  regs->reg_rflags |= 0x200;            // set IF so handler can be interrupted
+}
+
+// caller should validate that fd is in range and not empty
+// caller should hold fd_table_lock (must be acquired before file_table_lock in all cases)
+int close_fd(int fd, unsigned int* fd_table) {
+  {
+    spinlock_guard guard(file_table_lock);
+    file_decref(&file_table[fd_table[fd]]);
+  }
+  fd_table[fd] = FD_EMPTY;
+  return 0;
 }
 
 const unsigned int max_pathname_len = 0xFFFF; // arbitrary
@@ -357,6 +442,7 @@ uintptr_t proc::syscall(regstate* regs) {
     yield();
     log_printf("process %d is between yielding and returning\n", id_);
     log_printf("rip is %p\n", (void*)regs->reg_rip);
+    deliver_pending_signals(regs, 0);
     return 0;
   }
 
@@ -832,6 +918,205 @@ uintptr_t proc::syscall(regstate* regs) {
   case SYSCALL_TEXIT:
     syscall_texit(regs);
     break;  // not reached
+
+  case SYSCALL_TCGETATTR: {
+    int fd = (int) regs->reg_rdi;
+    uintptr_t buf_addr = regs->reg_rsi;
+
+    // Validate user buffer
+    if (valid_user_buffer(group_->pagetable_, buf_addr,
+                          sizeof(struct termios), PTE_P | PTE_U | PTE_W) < 0) {
+      return E_FAULT;
+    }
+    // Check that fd refers to the TTY vnode
+    if (fd < 0 || fd >= N_FILEDESC || group_->fd_table_[fd] == FD_EMPTY) {
+      return E_BADF;
+    }
+    {
+      spinlock_guard guard(group_->fd_table_lock);
+      spinlock_guard guard_f(file_table_lock);
+      file* f = &file_table[group_->fd_table_[fd]];
+      if (f->type != FTYPE_VNODE || f->vnode_->ops != &tty_vops_g) {
+        return E_NOTTY;
+      }
+    }
+    // Copy the full POSIX termios to userspace
+    memcpy(reinterpret_cast<void*>(buf_addr),
+           &consolestate::get().tty().ktermios_,
+           sizeof(struct termios));
+    return 0;
+  }
+
+  case SYSCALL_TCSETATTR: {
+    int fd = (int) regs->reg_rdi;
+    // int optional_actions = (int) regs->reg_rsi;  (TCSANOW/DRAIN/FLUSH; all identical)
+    uintptr_t buf_addr = regs->reg_rdx;
+
+    if (valid_user_buffer(group_->pagetable_, buf_addr,
+                          sizeof(struct termios), PTE_P | PTE_U) < 0) {
+      return E_FAULT;
+    }
+    if (fd < 0 || fd >= N_FILEDESC || group_->fd_table_[fd] == FD_EMPTY) {
+      return E_BADF;
+    }
+    {
+      spinlock_guard guard(group_->fd_table_lock);
+      spinlock_guard guard_f(file_table_lock);
+      file* f = &file_table[group_->fd_table_[fd]];
+      if (f->type != FTYPE_VNODE || f->vnode_->ops != &tty_vops_g) {
+        return E_NOTTY;
+      }
+    }
+    auto& tty = consolestate::get().tty();
+    auto& ldisc = tty.ldisc_;
+    struct termios* new_t = reinterpret_cast<struct termios*>(buf_addr);
+    {
+      spinlock_guard guard(ldisc.lock_);
+      tty.ktermios_ = *new_t;
+      // On entering raw mode, discard the partial canonical line.
+      if (!(new_t->c_lflag & ICANON)) {
+        ldisc.canon_len_ = 0;
+      }
+    }
+    return 0;
+  }
+
+  case SYSCALL_IOCTL: {
+    int fd = (int) regs->reg_rdi;
+    unsigned long request = regs->reg_rsi;
+    uintptr_t arg = regs->reg_rdx;
+
+    if (fd < 0 || fd >= N_FILEDESC || group_->fd_table_[fd] == FD_EMPTY) {
+      return E_BADF;
+    }
+    {
+      spinlock_guard guard(group_->fd_table_lock);
+      spinlock_guard guard_f(file_table_lock);
+      file* f = &file_table[group_->fd_table_[fd]];
+      if (f->type != FTYPE_VNODE || f->vnode_->ops != &tty_vops_g) {
+        return E_NOTTY;
+      }
+    }
+
+    auto& tty = consolestate::get().tty();
+
+    if (request == TIOCGWINSZ) {
+      if (valid_user_buffer(group_->pagetable_, arg,
+                            sizeof(struct winsize), PTE_P | PTE_U | PTE_W) < 0) {
+        return E_FAULT;
+      }
+      struct winsize* ws = reinterpret_cast<struct winsize*>(arg);
+      ws->ws_row    = (unsigned short) tty.rows_;
+      ws->ws_col    = (unsigned short) tty.cols_;
+      ws->ws_xpixel = 0;
+      ws->ws_ypixel = 0;
+      return 0;
+    }
+
+    if (request == TIOCSWINSZ) {
+      if (valid_user_buffer(group_->pagetable_, arg,
+                            sizeof(struct winsize), PTE_P | PTE_U) < 0) {
+        return E_FAULT;
+      }
+      struct winsize* ws = reinterpret_cast<struct winsize*>(arg);
+      tty.rows_ = ws->ws_row;
+      tty.cols_ = ws->ws_col;
+      // Raise SIGWINCH on the current process group
+      group_->sig_pending_ |= (1u << SIGWINCH);
+      // Deliver immediately on this syscall's return path
+      deliver_pending_signals(regs, 0);
+      return 0;
+    }
+
+    return E_NOTTY;
+  }
+
+  case SYSCALL_SIGACTION: {
+    int signo = (int) regs->reg_rdi;
+    uintptr_t act_addr    = regs->reg_rsi;
+    uintptr_t oldact_addr = regs->reg_rdx;
+
+    if (signo < 1 || signo >= task_group::NSIG
+        || signo == SIGKILL || signo == SIGSTOP) {
+      return E_INVAL;
+    }
+
+    // Return old handler if requested
+    if (oldact_addr) {
+      if (valid_user_buffer(group_->pagetable_, oldact_addr,
+                            sizeof(struct sigaction), PTE_P | PTE_U | PTE_W) < 0) {
+        return E_FAULT;
+      }
+      struct sigaction* oldact = reinterpret_cast<struct sigaction*>(oldact_addr);
+      oldact->sa_handler = group_->sig_handlers_[signo];
+      oldact->sa_mask    = 0;
+      oldact->sa_flags   = 0;
+    }
+
+    // Install new handler
+    if (act_addr) {
+      if (valid_user_buffer(group_->pagetable_, act_addr,
+                            sizeof(struct sigaction), PTE_P | PTE_U) < 0) {
+        return E_FAULT;
+      }
+      struct sigaction* act = reinterpret_cast<struct sigaction*>(act_addr);
+      group_->sig_handlers_[signo] = act->sa_handler;
+    }
+
+    return 0;
+  }
+
+  case SYSCALL_KILL: {
+    pid_t target_pid = (pid_t) regs->reg_rdi;
+    int signo = (int) regs->reg_rsi;
+
+    if (signo < 0 || signo >= task_group::NSIG) {
+      return E_INVAL;
+    }
+
+    // Locate target process by pid
+    proc* target = nullptr;
+    {
+      spinlock_guard guard(ptable_lock);
+      for (int i = 1; i < NPROC; ++i) {
+        if (ptable[i] && ptable[i]->pid_ == target_pid
+            && ptable[i]->id_ == ptable[i]->pid_) {
+          target = ptable[i];
+          break;
+        }
+      }
+      if (!target) {
+        return E_SRCH;
+      }
+      if (signo != 0) {
+        target->group_->sig_pending_ |= (1u << signo);
+      }
+    }
+
+    // If killing ourselves, deliver immediately on this syscall's return
+    if (target == this) {
+      deliver_pending_signals(regs, 0);
+    }
+    return 0;
+  }
+
+  case SYSCALL_SIGRETURN: {
+    // When the signal entry calls SIGRETURN:
+    //   regs->reg_rsp == frame_base + 48  (saved regstate is at that address)
+    uintptr_t saved_addr = regs->reg_rsp;
+    if (valid_user_buffer(group_->pagetable_, saved_addr,
+                          sizeof(regstate), PTE_P | PTE_U) < 0) {
+      return E_FAULT;
+    }
+    regstate* saved = reinterpret_cast<regstate*>(saved_addr);
+    uintptr_t saved_rax = saved->reg_rax;
+
+    // Restore execution context; iretq uses reg_rip/rsp/rflags from regs
+    regs->reg_rip    = saved->reg_rip;
+    regs->reg_rsp    = saved->reg_rsp;
+    regs->reg_rflags = saved->reg_rflags;
+    return saved_rax;
+  }
 
   default:
     // no such system call

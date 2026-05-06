@@ -199,43 +199,18 @@ int kcfs_vops::vop_decref(vnode* vn) const {
 }
 
 int kcfs_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
+  // Delegate to the line discipline
   auto& kbd = keyboardstate::get();
-  // Lock handoff
-  spinlock_guard guard(kbd.lock_);
-  vn->refcount_lock.unlock(irqs);
-  uintptr_t addr = reinterpret_cast<uintptr_t>(uio->buf); // ??? ignore offset for kcfs_vops? should this be reflected in file offset not increasing?
-    
-  // mark that we are now reading from the keyboard
-  // (so `q` should not power off)
-  if (kbd.state_ == kbd.boot) {
-    kbd.state_ = kbd.input;
-  }
-
-  waiter w;
-  w.wait_until(kbd.wq_, [&] () {
-    return (uio->sz == 0 || kbd.eol_ != 0);
-  }, guard);
-
-
-  // read that line or lines
-  size_t n = 0;
-  while (kbd.eol_ != 0 && n < uio->sz) {
-    if (kbd.buf_[kbd.pos_] == 0x04) {
-      // Ctrl-D means EOF
-      if (n == 0) {
-	kbd.consume(1);
-      }
-      break;
-    } else {
-      *reinterpret_cast<char*>(addr) = kbd.buf_[kbd.pos_];
-      ++addr;
-      ++n;
-      kbd.consume(1);
+  {
+    spinlock_guard kbd_guard(kbd.lock_);
+    if (kbd.state_ == keyboardstate::boot) {
+      kbd.state_ = keyboardstate::input;
     }
   }
-
-  // kbd.lock_.unlock(irqs);
-  return n;
+  auto& ldisc = consolestate::get().tty().ldisc_;
+  spinlock_guard guard(ldisc.lock_);
+  vn->refcount_lock.unlock(irqs);
+  return ldisc.read_locked(uio->buf, uio->sz, guard);
 }
   
 int kcfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
@@ -254,6 +229,43 @@ int kcfs_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
 // off_t kcfs_vops::vop_getsize(vnode* vn) const {
 //   assert(false); // should not be called
 // }
+
+
+// tty_vops (userspace TTY vnode operations)
+//    read() pulls bytes from the line discipline
+//    write() feeds bytes into the VT100 parser
+
+int tty_vops::vop_decref(vnode* vn) const {
+  assert(vn->refcount > 0);
+  return --vn->refcount;
+}
+
+int tty_vops::vop_read(vnode* vn, uio* uio, irqstate &irqs) const {
+  auto& kbd = keyboardstate::get();
+  // transition boot -> input so 'q' is no longer a poweroff key
+  // acquire kbd.lock_ briefly; do NOT hold it when acquiring ldisc.lock_
+  // (interrupt path is kbd.lock_ -> ldisc.lock_).
+  {
+    spinlock_guard kbd_guard(kbd.lock_);
+    if (kbd.state_ == keyboardstate::boot) {
+      kbd.state_ = keyboardstate::input;
+    }
+  }
+  auto& ldisc = consolestate::get().tty().ldisc_;
+  // Lock handoff: get ldisc lock, put back vnode refcount lock
+  spinlock_guard guard(ldisc.lock_);
+  vn->refcount_lock.unlock(irqs);
+  return ldisc.read_locked(uio->buf, uio->sz, guard);
+}
+
+int tty_vops::vop_write(vnode* vn, uio* uio, irqstate &irqs) const {
+  auto& csl = consolestate::get();
+  spinlock_guard guard(csl.lock_);
+  vn->refcount_lock.unlock(irqs);
+  csl.parser().feed(reinterpret_cast<const char*>(uio->buf), uio->sz);
+  return static_cast<int>(uio->sz);
+}
+
 
 // memf_vops (memfile vnode functions)
 
@@ -489,6 +501,7 @@ pipe_fops p_fops;
 kcfs_vops kc_vops;
 memf_vops mf_vops;
 chkfs_vops chk_vops;
+tty_vops tty_vops_g;
 
 int file_incref(file* f) {
   spinlock_guard guard(f->file_lock);
@@ -542,6 +555,26 @@ void init_kc_file(file* kc_file) {
     kc_file->size_ = E_SPIPE;
     kc_file->vnode_ = kcvn;
     kc_file->ops = &vn_fops;
+  }
+}
+
+// init_tty_file(tty_file)
+//    Set up a file entry backed by tty_vops
+void init_tty_file(file* tty_file) {
+  vnode* ttyvn = knew<vnode>(&tty_vops_g);
+  {
+    spinlock_guard guard(ttyvn->refcount_lock);
+    ttyvn->refcount = 1;
+  }
+  {
+    spinlock_guard guard_file(tty_file->file_lock);
+    tty_file->type = FTYPE_VNODE;
+    tty_file->refcount_ = 0;
+    tty_file->flags = FREAD | FWRITE;
+    tty_file->off_ = 0;
+    tty_file->size_ = E_SPIPE;
+    tty_file->vnode_ = ttyvn;
+    tty_file->ops = &vn_fops;
   }
 }
 

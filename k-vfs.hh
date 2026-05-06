@@ -124,9 +124,15 @@ struct pipe_fops : public file_ops {
 
 struct kcfs_vops : public vnode_ops { // "keyboard-console file system"
   int vop_decref(vnode* vn) const override;
-  int vop_read(vnode* vn, uio* uio, irqstate &irqs) const override;  
+  int vop_read(vnode* vn, uio* uio, irqstate &irqs) const override;
   int vop_write(vnode* vn, uio* uio, irqstate &irqs) const override;
   // off_t vop_getsize(vnode* vn, irqstate &irqs) const override;
+};
+
+struct tty_vops : public vnode_ops { // terminal
+  int vop_decref(vnode* vn) const override;
+  int vop_read(vnode* vn, uio* uio, irqstate &irqs) const override;
+  int vop_write(vnode* vn, uio* uio, irqstate &irqs) const override;
 };
 
 struct memf_vops : public vnode_ops { // memfile
@@ -148,6 +154,7 @@ extern pipe_fops p_fops;
 extern kcfs_vops kc_vops;
 extern memf_vops mf_vops;
 extern chkfs_vops chk_vops;
+extern tty_vops tty_vops_g;
 
 int file_incref(file* f);
 int file_decref(file* f);
@@ -161,6 +168,7 @@ int vnode_decref(vnode* vn);
 // off_t vnode_getsize(vnode* vn, irqstate &irqs);
 
 void init_kc_file(file* kc_file);
+void init_tty_file(file* tty_file);
 void init_pipe_files(file* read_file, file* write_file);
 int init_memfile_entry(file* file_slot, const char* pathname, int flags);
 vnode* init_diskfile_vnode(chkfs_iref ino, int flags);

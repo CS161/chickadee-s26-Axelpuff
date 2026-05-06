@@ -100,6 +100,9 @@ struct __attribute__((aligned(4096))) proc {
   int syscall_getusage(regstate* regs);
   int syscall_testkalloc(regstate* regs);
 
+  // signal helper
+  void deliver_pending_signals(regstate* regs, uintptr_t syscall_retval);
+
   inline irqstate lock_pagetable_read();
   inline void unlock_pagetable_read(irqstate& irqs);
   
@@ -113,16 +116,21 @@ private:
 
 struct task_group {
   // Shared resources
-  x86_64_pagetable* pagetable_ = nullptr;    // Process's page table // process
+  x86_64_pagetable* pagetable_ = nullptr;    // Process's page table
   spinlock pagetable_lock_; // for synchronizing between multiple threads  // a lock for the pagetable
-  
-  unsigned int fd_table_[N_FILEDESC]; // process
-  spinlock fd_table_lock; // process
+
+  unsigned int fd_table_[N_FILEDESC]; 
+  spinlock fd_table_lock; 
+
+  // Signal state
+  static constexpr int NSIG = 32;
+  void (*sig_handlers_[NSIG])(int) = {}; // SIG_DFL (nullptr) for all initially
+  uint32_t sig_pending_ = 0; // bitmap: bit N set if and only if signal N is pending
 
   // Phone book
   list<proc, &proc::task_links_> tasks_;
   std::atomic<int> live_task_count_ = -1;
-  spinlock tasks_lock_; // process
+  spinlock tasks_lock_; 
   std::atomic<int> exiting = 0;
 
   // "It takes a village to raise a child"

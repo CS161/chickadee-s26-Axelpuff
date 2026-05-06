@@ -21,34 +21,18 @@
 
 struct keyboardstate {
     spinlock lock_;
-    char buf_[256];
-    unsigned pos_ = 0;      // next position to read
-    unsigned len_ = 0;      // number of characters in buffer
-    unsigned eol_ = 0;      // position in buffer of most recent \n
-    wait_queue wq_;
     enum { boot, input, fail } state_ = boot;
 
     static keyboardstate& get() {
         return kbd;
     }
 
-    void check_invariants() {
-        assert(pos_ < sizeof(buf_));
-        assert(len_ <= sizeof(buf_));
-        assert(eol_ <= len_);
-    }
-
     // called from proc::exception(); read characters from device
     void handle_interrupt();
-
-    // consume `n` characters from buffer (0 <= n <= len_)
-    void consume(size_t n);
 
  private:
     static keyboardstate kbd;
     keyboardstate() = default;
-
-    void maybe_echo(int ch);
 };
 
 
