@@ -74,9 +74,25 @@ void assert_fail(const char* file, int line, const char* msg,
     sys_panic(nullptr);
 }
 
+// Because a C++ function isn't thin enough for `many_threads` :(
+
+extern "C" [[noreturn]] void thread_texit_entry();
+
+__attribute__((naked, noreturn))
+void thread_texit_entry() {
+    asm volatile (
+        "movq %[num], %%rax\n\t"
+        "syscall\n\t"
+        "1: jmp 1b\n\t"
+        :
+        : [num] "i" (SYSCALL_TEXIT)
+        : "rax", "rcx", "r11", "memory"
+    );
+}
 
 // sys_clone
 //    Create a new thread.
+
 
 pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top) {
   register uintptr_t fn asm("r12") =
@@ -96,7 +112,7 @@ pid_t sys_clone(void (*function)(void*), void* arg, char* stack_top) {
 		  "jmp *%[fn]\n\t"
 		  :
 		  : [stack] "r" (st),
-		    [texit] "r" (sys_texit),
+		    [texit] "r" (thread_texit_entry),
 		    [arg] "r" (fn_arg),
 		    [fn] "r" (fn)
 		  : "memory", "cc", "rdi"

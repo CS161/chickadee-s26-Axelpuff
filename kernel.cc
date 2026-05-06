@@ -135,7 +135,7 @@ void start_initial_process(pid_t pid, const char* name) {
 void proc::exception(regstate* regs) {
   // It can be useful to log events using `// log_printf`.
   // Events logged this way are stored in the host's `log.txt` file.
-  // log_printf("proc %d: exception %d @%p\n", id_, regs->reg_intno, regs->reg_rip);
+  // og_printf("proc %d: exception %d @%p\n", id_, regs->reg_intno, regs->reg_rip);
 
   // Record most recent user-mode %rip.
   if ((regs->reg_cs & 3) != 0) {
@@ -201,6 +201,10 @@ void proc::exception(regstate* regs) {
   // return to interrupted context
 }
 
+int proc::is_exiting() {
+  return group_ && group_->exiting;
+}
+
 // utility to avoid hard-coding the stack bottom canary offset
 [[gnu::noinline]] void* proc::stack_bottom_canary_ptr() {
   // // log_printf("ptr: %p\n", &(this->stack_bottom_canary));
@@ -225,9 +229,11 @@ void cleanup_pagetable(x86_64_pagetable *pagetable, uintptr_t max_addr);
 task_group* proc::find_zombie_child() {
   task_group* g = this->group_->children_.front();
   while (g != nullptr) {
+    spinlock_guard guard(g->tasks_lock_);
     // log_printf("parent id is %i\n", g->parent_id_);
     assert(g->parent_id_ == this->pid_);
-    if (g->live_task_count_ == 0) {
+    proc* group_leader = g->tasks_.front();
+    if (g->live_task_count_ == 0 && group_leader->pstate_ == ps_zombie) {
       break;
     } else {
       g = this->group_->children_.next(g);
@@ -236,45 +242,26 @@ task_group* proc::find_zombie_child() {
   return g;
 }
 
-// // cleans up (euphemism) zombie child process and returns exit status
-// // MUST BE CALLED holding both `phierarchy_lock` and `ptable_lock`
-// int proc::cleanup_and_return_status(proc* p) {
-//   // log_printf("checking process %d...\n", p->id_);
-//   assert(p != this);
-//   pid_t pid = p->id_;
-//   int exit_status = p->group_->exit_status_;
-
-//   p->pstate_ = ps_collected; // pointless?
-//   ptable[pid] = nullptr;
-//   p->group_->child_links_.erase();
-	    
-//   // log_printf("Trying to clean up process %d\n", pid);
-//   delete p;
-//   // log_printf("Cleaned up process %d\n", pid);
-//   return exit_status;
-// }
-
-// cleans up (euphemism) zombie child task group and returns exit status
+// frees up task group leader ptable slot and memory, frees task group memory
+// both `p` and `g` are unsafe to access after calling this function
 // MUST BE CALLED holding both `phierarchy_lock` and `ptable_lock`
-int proc::cleanup_and_return_status(task_group* g) {
-  // log_printf("checking process %d...\n", p->id_);
+int cleanup_and_return_status(proc* p, task_group* g) {
+  int l = p->pstate_;
+  log_printf("(3) checking process %d with pstate %d...\n", p->id_, l);
+  assert(p->id_ == p->pid_ && p->group_ == g);
+  assert(p->pstate_ == proc::ps_zombie);
+  assert(g->exiting == 1 && g->live_task_count_ == 0);
+  pid_t pid = p->id_;
   int exit_status = g->exit_status_;
   
-  spinlock_guard guard(group_->tasks_lock_);
-  for (proc* p = g->tasks_.pop_front(); p != nullptr; p = g->tasks_.pop_front()) {
-    assert(p->id_ == p->pid_);
-    assert(g->tasks_.pop_front() == nullptr); // should only be one task in a process, but just in case...
-    pid_t pid = p->id_;
-    assert(p->pstate_ == ps_zombie);
-    // p->pstate_ = ps_collected;
-    // p->group_ = nullptr; // avoid double free
-    // log_printf("Tried to null group and pid for task %d\n", pid);
-    ptable[pid] = nullptr;
-        
-    delete p;
-  }
+  p->pstate_ = proc::ps_collected;
+  ptable[pid] = nullptr;
+
   g->child_links_.erase();
+     
   delete g;
+  delete p;
+  
   // log_printf("Cleaned up process %d\n", pid);
   return exit_status;
 }
@@ -330,19 +317,13 @@ int valid_user_buffer(x86_64_pagetable *pagetable, uintptr_t start_addr, int fla
 //    process in `%rax`.
 
 uintptr_t proc::syscall(regstate* regs) {
-  //// log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
+  // log_printf("proc %d: syscall %ld @%p\n", id_, regs->reg_rax, regs->reg_rip);
   // // log_printf("Size of regstate: %zu\n", sizeof(*regs));
   // // log_printf("Distance between canary and offset: %" PRIuPTR "\n", reinterpret_cast<uintptr_t>(&this->stack_bottom_canary) - reinterpret_cast<uintptr_t>(this));
   // // log_printf("canary value: %i\n", this->stack_bottom_canary);
 
   // Record most recent user-mode %rip.
   recent_user_rip_ = regs->reg_rip;
-
-  // if the process group is exiting, this thread must exit before returning to user space
-  // safe to check here because we haven't yet modified any shared state for this syscall
-  if (group_->exiting) {
-    syscall_texit(regs);
-  }
 
   switch (regs->reg_rax) {
 
@@ -364,7 +345,7 @@ uintptr_t proc::syscall(regstate* regs) {
     return -1;
 
   case SYSCALL_GETPID: {
-    log_printf("process %d is getpidding\n", id_);
+    // log_printf("process %d is getpidding\n", id_);
     return pid_;
   }
 
@@ -372,10 +353,10 @@ uintptr_t proc::syscall(regstate* regs) {
     return id_;
 
   case SYSCALL_YIELD: {
-    log_printf("process %d is yielding\n", id_);
+    // log_printf("process %d is yielding\n", id_);
     yield();
     log_printf("process %d is between yielding and returning\n", id_);
-    log_printf("rsp is %p\n", (void*)regs->reg_rsp);
+    log_printf("rip is %p\n", (void*)regs->reg_rip);
     return 0;
   }
 
@@ -726,18 +707,18 @@ uintptr_t proc::syscall(regstate* regs) {
 
     spinlock_guard guard(sleep_lock);
     int q = t_wakeup & (WHEEL_QUEUES - 1);
-    group_->blocked_wq_ = q;
-    group_->child_exited_ = 0;
+    blocked_wq_ = q;
+    interrupted_ = 0;
 
     waiter w;
     w.wait_until(sleep_wq_wheel[q], [&] () {
-      return (long(t_wakeup - ticks) <= 0 || group_->child_exited_ == 1);
+      return (long(t_wakeup - ticks) <= 0 || interrupted_);
     }, guard);
 
     // unsigned long final_resumes = resume_counter_;
     // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);
-    group_->blocked_wq_ = -1;
-    return group_->child_exited_ ? E_INTR : 0;
+    blocked_wq_ = -1;
+    return interrupted_ ? E_INTR : 0;
   }
 
   case SYSCALL_GETPPID: {
@@ -758,64 +739,75 @@ uintptr_t proc::syscall(regstate* regs) {
     if (pid == 0) {
       task_group* g = group_->children_.front();
       if (!g) {
-	// log_printf("%d: couldn't find zombies to reap, no children\n", id_);
-	return format_waitpid_return(0, E_CHILD);
+	      // log_printf("%d: couldn't find zombies to reap, no children\n", id_);
+	      return format_waitpid_return(0, E_CHILD);
       }
 	
       g = find_zombie_child(); // pstate_ is atomic so this doesn't need ptable lock
       if (!g) {
-	if (wnohang) {
-	  // log_printf("%d: couldn't find zombies to reap, still alive\n", id_);
-	  return format_waitpid_return(0, E_AGAIN);
-	} else {
-	  // resume_counter_ = 0;
-	  // unsigned long initial_resumes = resume_counter_;	  
-	  waiter w;
-	  w.wait_until(proc_exit_wq, [&] () {
-	    return (g = find_zombie_child()); // this is intentionally an assignment
-	  }, guard_h);	 
-	  // unsigned long final_resumes = resume_counter_;
-	  // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
-	}
+	      if (wnohang) {
+	        // log_printf("%d: couldn't find zombies to reap, still alive\n", id_);
+	        return format_waitpid_return(0, E_AGAIN);
+	      } else {
+          // resume_counter_ = 0;
+          // unsigned long initial_resumes = resume_counter_;	  
+          waiter w;
+          w.wait_until(proc_exit_wq, [&] () {
+            return (g = find_zombie_child()); // this is intentionally an assignment
+          }, guard_h);	 
+          // unsigned long final_resumes = resume_counter_;
+          // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
+        }
       }
 	
       assert(g);
+      proc* group_leader;
       {
-	spinlock_guard guard(g->tasks_lock_);
-	assert(g->tasks_.front());
-	pid = g->tasks_.front()->pid_;
+        spinlock_guard guard(g->tasks_lock_);
+        group_leader = g->tasks_.pop_front();
+        assert(!g->tasks_.front()); // only group leader should be left
+        assert(group_leader->id_ == group_leader->pid_);
+        // int l = group_leader->pstate_;
+        //log_printf("checking process %d with pstate %d...\n", group_leader->id_, l);
+        assert(group_leader->pstate_ == ps_zombie);
+        pid = group_leader->pid_;
       }
       spinlock_guard guard(ptable_lock);
-      int exit_status = cleanup_and_return_status(g);
+      int l = group_leader->pstate_;
+      log_printf("(1) checking process %d with pstate %d...\n", group_leader->id_, l);
+      int exit_status = cleanup_and_return_status(group_leader, g);
       return format_waitpid_return(exit_status, pid);
     } else {
       spinlock_guard guard(ptable_lock);
-      if (!ptable[pid] || ptable[pid]->group_->parent_id_ != this->id_) {
-	return format_waitpid_return(0, E_CHILD);
+      if (!ptable[pid] || ptable[pid]->group_->parent_id_ != this->pid_) {
+	      return format_waitpid_return(0, E_CHILD);
       }
       proc* p = ptable[pid];
       if (p->id_ != p->pid_) { // the id needs to be for a group leader
-	return format_waitpid_return(0, E_INVAL);
+	      return format_waitpid_return(0, E_INVAL);
       }
       guard.unlock();
-      if (p->group_->live_task_count_ != 0) {
-	if (wnohang) {
-	  return format_waitpid_return(0, E_AGAIN);
-	} else {
-	  // resume_counter_ = 0;
-	  // unsigned long initial_resumes = resume_counter_;    
-	  waiter w;
-	  w.wait_until(proc_exit_wq, [&] () {
-	    return (p->group_->live_task_count_ == 0);
-	  }, guard_h);
-	  // unsigned long final_resumes = resume_counter_;
-	  // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
-	}
+      if (!(p->group_->live_task_count_ == 0 && p->pstate_ == ps_zombie)) {
+	      if (wnohang) {
+	        return format_waitpid_return(0, E_AGAIN);
+	      } else {
+          // resume_counter_ = 0;
+          // unsigned long initial_resumes = resume_counter_;    
+          waiter w;
+          w.wait_until(proc_exit_wq, [&] () {
+            return (p->group_->live_task_count_ == 0 && p->pstate_ == ps_zombie);
+          }, guard_h);
+          // unsigned long final_resumes = resume_counter_;
+          // log_printf("Resumes since started sleeping (process %d): %lu\n", id_, final_resumes - initial_resumes);	  
+        }
       }
 	
-      assert(p->pstate_ == ps_zombie);
+      int l = p->pstate_;
+      log_printf("exiting: %i\n", p->is_exiting());
+      log_printf("(2) checking process %d with pstate %d...\n", p->id_, l);
+      assert(l == ps_zombie);
       guard.lock();
-      int exit_status = cleanup_and_return_status(p->group_);
+      int exit_status = cleanup_and_return_status(p, p->group_);
       return format_waitpid_return(exit_status, pid);
     }
   }
@@ -936,6 +928,9 @@ int proc::syscall_clone(regstate* regs) {
   { 
     spinlock_guard guard_h(phierarchy_lock);
     spinlock_guard guard(ptable_lock);
+    spinlock_guard guard_pt(group_->pagetable_lock_);
+    spinlock_guard guard_t(group_->tasks_lock_);
+    assert(!group_->exiting);
     tid = find_free_tid();
     if (tid < 0) {
       // log_printf("failed to find a ptable slot\n");
@@ -946,35 +941,18 @@ int proc::syscall_clone(regstate* regs) {
       return E_NOMEM;
     }
     p->id_ = tid;
-    // !!! difference is here
     p->pid_ = pid_;
-    p->group_ = this->group_;
-    spinlock_guard guard_pt(group_->pagetable_lock_);
-    p->init_user(group_->pagetable_); // or just set it? idk
 
-    assert(!group_->exiting);
+    p->group_ = group_;
+    p->init_user(group_->pagetable_);
     group_->live_task_count_++;
-    {
-      spinlock_guard guard_task(group_->tasks_lock_);
-      group_->tasks_.push_front(p);
-    }
+    group_->tasks_.push_front(p);
 
     *(p->regs_) = *regs;
     p->regs_->reg_rax = 0;
     ptable[tid] = p;
   }
 
-  // copy fd_table, increment refcounts
-  // spinlock_guard guard(fd_table_lock);
-  // for (int i = 0; i < N_FILEDESC; i++) {
-  //   p->fd_table[i] = fd_table[i];
-  //   if (p->fd_table[i] != FD_EMPTY) {
-  //     spinlock_guard guard_f(file_table_lock);
-  //     file_incref(&file_table[fd_table[i]]);
-  //     // log_printf("ok: %i\n", i);
-  //   }
-  // }
-  
   assert(tid > 0);
   // add to run queue
   cpus[tid % ncpu].enqueue(p);
@@ -1092,61 +1070,122 @@ int proc::syscall_fork(regstate* regs) {
 
 // int get_ptable_index(proc* p)
 
+// void finish_task_group_exit(task_group* g) {
+//   // decrement fds
+//   spinlock_guard guard_f(g->fd_table_lock);
+//   for (int i = 0; i < N_FILEDESC; i++) {
+//     if (g->fd_table_[i] != FD_EMPTY) {
+//       close_fd(i, g->fd_table_);
+//     }
+//   }
+
+//   // free pagetable
+//   x86_64_pagetable* pt_to_free;
+//   {
+//     spinlock_guard guard_pt(g->pagetable_lock_);
+//     pt_to_free = g->pagetable_;
+//     g->pagetable_ = nullptr;
+//   }
+//   set_pagetable(early_pagetable);
+//   cleanup_pagetable(pt_to_free, MEMSIZE_VIRTUAL);
+  
+//   // wake up waiters (won't activate until lock is released)
+//   proc_exit_wq.notify_all();
+// }
+
 // proc::syscall_texit(regs)
 //    Exit current task.
 
 void proc::syscall_texit(regstate* regs) {
-  log_printf("process %d is exiting\n", id_);
+  log_printf("Task %d is exiting...\n", id_);
   x86_64_pagetable* pt_to_free = nullptr;
+  log_printf("a\n");
   {
     spinlock_guard guard_h(phierarchy_lock);
     spinlock_guard guard(ptable_lock);
-    pstate_ = ps_zombie;
-    pid_t ppid = group_->parent_id_;
-    if (--group_->live_task_count_ == 0) {
+    spinlock_guard guard_sleep(sleep_lock);
+    spinlock_guard guard_pt(group_->pagetable_lock_);
+    spinlock_guard guard_t(group_->tasks_lock_);
+    log_printf("b\n");
+
+    if (id_ != pid_) {
+      task_links_.erase();
+    }
+    --group_->live_task_count_;
+    assert(group_->live_task_count_ >= 0);
+
+    if (group_->live_task_count_ == 0) {
       log_printf("finishing exit process...\n");
+      group_->exiting = 1;
+
+      // reparent kids
+      // (all parent-child relationships are guarded by phierarchy_lock)
+      for (task_group* g = group_->children_.pop_front();
+            g != nullptr;
+            g = group_->children_.pop_front()) {
+        // log_printf("Reparenting %d to init\n", p->id_);
+        g->parent_id_ = 1;
+        ptable[1]->group_->children_.push_front(g);
+        // log_printf("Done reparenting %d\n", p->id_);
+      }
 
       {
-        spinlock_guard guard_pt(group_->pagetable_lock_);
+        // decrement fds
+        spinlock_guard guard_f(group_->fd_table_lock);
+        for (int i = 0; i < N_FILEDESC; i++) {
+          if (group_->fd_table_[i] != FD_EMPTY) {
+            close_fd(i, group_->fd_table_);
+          }
+        }
+      }
+
+      {
+        // spinlock_guard guard_pt(group_->pagetable_lock_);
         pt_to_free = group_->pagetable_;
         group_->pagetable_ = nullptr;
       }
-      // Switch off the process page table before it is freed
-      set_pagetable(early_pagetable);
-
-      // wake up waiters (won't activate until lock is released)
-      proc_exit_wq.notify_all();
-      // notify parent if parent is sleeping
-      if (ppid != 1
-          && ptable[ppid] // valid since we have ptable_lock
-          && ptable[ppid]->pstate_ == proc::ps_blocked
-          ) {
-        assert(ptable[ppid]->group_->blocked_wq_ != -1);
-        spinlock_guard sleep_guard(sleep_lock);
-        ptable[ppid]->group_->child_exited_ = 1;
-        sleep_wq_wheel[ptable[ppid]->group_->blocked_wq_].notify_all();
-      }
-    } else {
-      int bruh = group_->live_task_count_;
-      log_printf("live task count: %i\n", bruh);
-      {
-        spinlock_guard tasks_guard(group_->tasks_lock_);
-        task_links_.erase();
-      }
-
-      ptable[id_] = nullptr;
-      group_ = nullptr; // avoid double free
-      log_printf("Tried to null group and pid for task %d\n", id_);
-      pstate_ = ps_collected;
     }
   }
 
+  
+  log_printf("g\n");
   // Free old page table after releasing all locks
   if (pt_to_free) {
+    set_pagetable(early_pagetable);
     cleanup_pagetable(pt_to_free, MEMSIZE_VIRTUAL);
     // regs_ = regs;
   }
-
+  log_printf("h\n");
+  // must happen last since it might cause the proc struct to be freed
+  {
+    spinlock_guard guard_h(phierarchy_lock);
+    spinlock_guard guard(ptable_lock);
+    spinlock_guard guard_sleep(sleep_lock);
+    spinlock_guard guard_t(group_->tasks_lock_);
+    // wake up waiters (won't activate until lock is released)
+    proc_exit_wq.notify_all();
+    // notify parent if parent is sleeping
+    pid_t ppid = group_->parent_id_;
+    if (ppid != 1 && ptable[ppid] // valid since we have ptable_lock
+        ) {
+      for (proc* t = ptable[ppid]->group_->tasks_.front(); t; t = ptable[ppid]->group_->tasks_.next(t)) {
+        log_printf("Notifying parent thread %d (pid %d) from child thread %d\n", t->id_, ppid, id_);
+        if (t->pstate_ == proc::ps_blocked) {
+          t->interrupted_ = 1;
+          if (t->blocked_wq_ != -1) {
+            sleep_wq_wheel[t->blocked_wq_].notify_all();
+          }
+        }
+      }
+    }
+    if (id_ == pid_) {
+      pstate_ = ps_zombie;
+    } else {
+      group_ = nullptr; // avoid double free
+      ptable[id_] = nullptr;
+      pstate_ = ps_collected;
+    }
+  }
   // from this point on the proc struct and stack might be obliterated
   yield_noreturn();
 }
@@ -1156,46 +1195,40 @@ void proc::syscall_texit(regstate* regs) {
 //    Exit current process.
 
 void proc::syscall_exit(regstate* regs) {  
-  // log_printf("Process %ld is exiting...\n", this->id_);
-
+  log_printf("Process %ld is exiting...\n", this->id_);
   if (this->id_ == 1) {
     process_halt();
-  }
-    
-  {
-    spinlock_guard guard_h(phierarchy_lock);
-    spinlock_guard guard(ptable_lock);
-    // reparent kids
-    for (task_group* g = group_->children_.pop_front();
-	 g != nullptr;
-	 g = group_->children_.pop_front()) {
-      // log_printf("Reparenting %d to init\n", p->id_);
-      g->parent_id_ = 1;
-      ptable[1]->group_->children_.push_front(g);
-      // log_printf("Done reparenting %d\n", p->id_);
-    }
-  }
-
-  {
-    // decrement fds
-    spinlock_guard guard_f(group_->fd_table_lock);
-    for (int i = 0; i < N_FILEDESC; i++) {
-      if (group_->fd_table_[i] != FD_EMPTY) {
-	close_fd(i, group_->fd_table_);
-      }
-    }
   }
 
   {
     // Mark the group as exiting
     spinlock_guard guard_h(phierarchy_lock);
     spinlock_guard guard(ptable_lock);
+    spinlock_guard guard_t(group_->tasks_lock_);
     // set exit status
     group_->exit_status_ = regs->reg_rdi;
     // mark group as exiting. However, the real sign of death is live_task_count == 0.
     group_->exiting = 1;
   }
-    
+
+  {
+    // Wake up all blocked threads in group
+    spinlock_guard guard_sleep(sleep_lock);
+    spinlock_guard guard_t(group_->tasks_lock_);
+    for (proc* t = group_->tasks_.front(); t; t = group_->tasks_.next(t)) {
+      log_printf("Notifying thread %d in exiting process %d\n", t->id_, id_);
+      if (t->pstate_ == proc::ps_blocked) {
+        t->interrupted_ = 1;
+        if (t->blocked_wq_ != -1) {
+          sleep_wq_wheel[t->blocked_wq_].notify_all();
+        } else {
+          proc_exit_wq.notify_all();
+        }
+      }
+    }
+  }
+
+  log_printf("...here goes process %d\n", id_);
   syscall_texit(regs);
 }
 

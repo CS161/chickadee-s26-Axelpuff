@@ -16,7 +16,7 @@ list<proc, &proc::child_links_> children;
 ```
 Each `proc` has a `parent_id_` member and an unordered linked list of its children (as pointers to their structs).
 
-There are also `blocked_wq` and `child_exited_` members for dealing with `E_INTR`.
+There are also `blocked_wq` and `interrupted_` members for dealing with `E_INTR`.
 
 
 C. Parent processes: Synchronization plan
@@ -25,7 +25,7 @@ There are three `spinlock`s, `ptable_lock` and `phierarchy_lock`.
 
 - `ptable_lock` must be held whenever modifying or indexing `ptable`. It also protects the `pagetable_` field for the purposes of `memusage::refresh`.
 - `phierarchy_lock` must be held whenever modifying or accessing any `proc`'s `parent_id_` or `children` members.
-- `sleep_lock` must be held whenever modifying `blocked_wq_` or `child_exited_` on any `proc`.
+- `sleep_lock` must be held whenever modifying `blocked_wq_` or `interrupted_` on any `proc`.
 
 In practice, the first two are often held at the same time. If the kernel wants to hold both at the same time, it **MUST** obtain `phierarchy_lock` **FIRST**. (`sleep_lock` should be obtained last of the three.)
 

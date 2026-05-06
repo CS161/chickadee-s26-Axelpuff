@@ -63,6 +63,10 @@ struct wait_queue {
 #define CHICKADEE_WAIT_FUNCTIONS 1
 // Beginning of inline functions (second inclusion)
 
+inline bool waiter_should_stop_blocking() {
+    proc* p = current();
+    return p->is_exiting();
+}
 
 inline waiter::waiter()
     : p_(current()) {
@@ -131,7 +135,7 @@ template <typename F>
 inline void waiter::wait_until(wait_queue& wq, F predicate) {
     while (true) {
         prepare(wq);
-        if (predicate()) {
+        if (predicate() || waiter_should_stop_blocking()) {
             break;
         }
         maybe_block();
@@ -149,7 +153,7 @@ inline void waiter::wait_until(wait_queue& wq, F predicate,
                                spinlock& lock, irqstate& irqs) {
     while (true) {
         prepare(wq);
-        if (predicate()) {
+        if (predicate() || waiter_should_stop_blocking()) {
             break;
         }
         lock.unlock(irqs);
@@ -174,7 +178,9 @@ inline void waiter::wait_until(wait_queue& wq, F predicate,
 //    Block on `wq` at most once.
 inline void waiter::wait_once(wait_queue& wq) {
     prepare(wq);
-    maybe_block();
+    if (!waiter_should_stop_blocking()) {
+        maybe_block();
+    }
     clear();
 }
 
@@ -185,9 +191,11 @@ inline void waiter::wait_once(wait_queue& wq) {
 inline void waiter::wait_once(wait_queue& wq,
                               spinlock& lock, irqstate& irqs) {
     prepare(wq);
-    lock.unlock(irqs);
-    maybe_block();
-    irqs = lock.lock();
+    if (!waiter_should_stop_blocking()) {
+        lock.unlock(irqs);
+        maybe_block();
+        irqs = lock.lock();
+    }
     clear();
 }
 

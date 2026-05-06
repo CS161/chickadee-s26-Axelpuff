@@ -156,7 +156,7 @@ static void exit_all_thr(void*) {
 
 [[noreturn]] static void exit_all() {
     message("checking that exit exits blocked threads");
-
+    
     // create thread
     pid_t t = sys_clone(exit_all_thr, nullptr, allocate_stack(0));
     assert_gt(t, 0);
@@ -190,8 +190,6 @@ static void implicit_exit_thr(void*) {
 static void many_threads_thr(void*) {
     assert_eq(sys_getpid(), my_pid); // pid_t my_tid = sys_gettid();
     sys_yield();
-    asm volatile("nop");
-    console_printf("innocent message\n");
 }
 
 [[noreturn]] static void many_threads() {

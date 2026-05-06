@@ -93,12 +93,11 @@ void cpustate::schedule() {
             if (!prev->runq_links_.is_linked()) {
                 runq_.push_back(prev);
             }
-        }//  else if (prev && prev->pstate_ == proc::ps_collected) {
-	//         log_printf("CLEANED UP A PROCESS!!!: %d\n", prev->id_);
-        //     log_printf("check this: %p\n", prev->group_);
-        //     assert(prev->group_ == nullptr);    
-        //     // delete prev;
-        // }
+        } else if (prev && prev->pstate_ == proc::ps_collected) {
+	        log_printf("CLEANED UP A PROCESS!!!: %d\n", prev->id_);
+            assert(prev->group_ == nullptr);    
+            delete prev;
+        }
 
         // run idle task as last resort
         current_ = runq_.empty() ? idle_task_ : runq_.pop_front();

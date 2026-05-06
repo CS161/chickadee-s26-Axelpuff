@@ -179,6 +179,16 @@ restore_and_iret:
         cmpl $PROC_RUNNABLE, 24(%rdi)
         jne panic_nonrunnable
 
+        // If process group is exiting, exit thread
+        movq %gs:(8), %rdi
+        call _ZN4proc10is_exitingEv
+        testl %eax, %eax
+        jz 1f
+
+        movq %gs:(8), %rdi            // this proc
+        movq %rsp, %rsi               // regstate*
+        call _ZN4proc13syscall_texitEP8regstate
+
 1:      // restore `regstate` registers
         popq %rax
         popq %rcx
@@ -260,12 +270,6 @@ syscall_entry:
         movq %gs:(8), %rdi
         leaq 16(%rsp), %rsi
         
-	// try to do canary stuff
-        // subq $0x8, %rsp
-	// movl %gs:(0x20), %eax
-        // cmp $CANARY_VALUE, %eax
-        // jne stack_check_fail
-        
 	movl %eax, -0x8(%rbp)
 	xorl %eax, %eax
 	
@@ -273,12 +277,6 @@ syscall_entry:
 
         // When `proc::syscall` returns, `%rax` holds the return value.
         // Preserve that, plus all callee-saved registers.
-        
-	// check canary
-	// movl -0x8(%rbp), %edi
-	// xorl %gs:(0x1c), %edi
-        // jne stack_check_fail
-        // addq $0x8, %rsp
 
         // check proc stack bottom canary
         pushq %rax        
@@ -293,6 +291,19 @@ syscall_entry:
         cmpl $PROC_RUNNABLE, 24(%rdi)
         jne panic_nonrunnable
 
+        / If process group is exiting, don't return to user.
+        pushq %rax                    // preserve syscall return value
+        movq %gs:(8), %rdi
+        call _ZN4proc10is_exitingEv
+        testl %eax, %eax
+        popq %rax
+        jz 1f
+
+        movq %gs:(8), %rdi            // this proc
+        leaq 16(%rbp), %rsi           // regstate*, past fake frame
+        call _ZN4proc13syscall_texitEP8regstate
+
+1:
         popq %rbp                      // restore saved %rbp from fake stackframe
         addq $8, %rsp                  // skip return %rip from fake stackframe
 

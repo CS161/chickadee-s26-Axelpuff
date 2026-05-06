@@ -53,6 +53,9 @@ struct __attribute__((aligned(4096))) proc {
   task_group* group_;
   list_links task_links_;
 
+  int blocked_wq_ = -1; // helps the child wake up this process by pointing to the queue it's sleeping on
+  bool interrupted_ = 0; // for early exit from msleep when child exits, or when process exits
+
   // This member must come last
   int stack_bottom_canary = CANARY_VALUE; // task
 
@@ -87,7 +90,7 @@ struct __attribute__((aligned(4096))) proc {
 
   // helpers for waitpid
   task_group* find_zombie_child(); // ??? should go to task_group?
-  int cleanup_and_return_status(task_group* p);  
+  //int cleanup_and_return_status(task_group* p);  
 
   uintptr_t syscall_read(regstate* reg);
   uintptr_t syscall_write(regstate* reg);
@@ -102,6 +105,7 @@ struct __attribute__((aligned(4096))) proc {
   
   // get canary location at runtime; avoid hard coding canary location
   void* stack_bottom_canary_ptr();
+  int is_exiting();
 
 private:
   static int load_segment(const elf_program& ph, proc_loader& ld);
@@ -119,20 +123,19 @@ struct task_group {
   list<proc, &proc::task_links_> tasks_;
   std::atomic<int> live_task_count_ = -1;
   spinlock tasks_lock_; // process
-  int exiting = 0;
+  std::atomic<int> exiting = 0;
 
   // "It takes a village to raise a child"
+  // (All fields are guarded by `phierarchy_lock`)
   pid_t parent_id_ = 0; // 0 should never be the parent id during runtime. the void fathers no processes
   list_links child_links_;
   list<task_group, &task_group::child_links_> children_;
   int exit_status_ = 0; // check out my music under the alias "Exit Status" on soundcloud (https://soundcloud.com/exit-status)
-  int blocked_wq_ = -1; // helps the child wake up this process by pointing to the queue it's sleeping on
-  bool child_exited_ = 0; // for early exit from msleep when child exits
   
   // unsigned long resume_counter_ = 0; // this is for that one part where I had to show there were less resumes
 };
 
-#define NPROC 16
+#define NPROC 512
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
 extern spinlock phierarchy_lock;
