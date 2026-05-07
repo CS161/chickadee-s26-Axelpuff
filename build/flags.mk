@@ -3,7 +3,7 @@
 # Dependency files
 DEPCFLAGS = -MD -MF $(DEPSDIR)/$(@F).d -MP
 
-# Flags for building programs that run on the host (not in Chickadee)
+# Flags for building programs that run on the host
 HOSTCPPFLAGS = $(DEFS) -I.
 HOSTCFLAGS := -std=gnu23 $(CFLAGS) -Wall -W
 HOSTCXXFLAGS := -std=gnu++23 $(CXXFLAGS) -Wall -W

@@ -169,6 +169,20 @@ char* strchr(const char* s, int c) {
     }
 }
 
+char* strrchr(const char* s, int c) {
+    const char* last = nullptr;
+    while (*s != '\0') {
+        if (*s == (char) c) {
+            last = s;
+        }
+        ++s;
+    }
+    if ((char) c == '\0') {
+        return (char*) s;
+    }
+    return (char*) last;
+}
+
 char* strstr(const char* hs, const char* ns) {
     size_t i = 0, j = 0;
     while (hs[i] != '\0' && ns[j] != '\0') {
@@ -246,6 +260,10 @@ long strtol(const char* s, char** endptr, int base) {
         x = bound;
     }
     return long(negative ? -x : x);
+}
+
+int atoi(const char* s) {
+    return (int) strtol(s, nullptr, 10);
 }
 
 } // extern "C"
@@ -651,7 +669,12 @@ struct string_printer : public printer {
     char* end_;
     size_t n_;
     string_printer(char* s, size_t size)
-        : s_(s), end_(s + size), n_(0) {
+        // Saturate end_ on overflow so callers passing SIZE_MAX (e.g.
+        // `__sprintf_chk` with unknown buflen) get an effectively unbounded
+        // buffer instead of a wrapped end_ that disables every write.
+        : s_(s),
+          end_(size > (size_t)(-1) - (uintptr_t)s ? (char*)(uintptr_t)-1 : s + size),
+          n_(0) {
     }
     void putc(unsigned char c) override {
         if (s_ < end_) {
@@ -661,18 +684,18 @@ struct string_printer : public printer {
     }
 };
 
-ssize_t vsnprintf(char* s, size_t size, const char* format, va_list val) {
+int vsnprintf(char* s, size_t size, const char* format, va_list val) {
     string_printer sp(s, size);
     sp.vprintf(format, val);
     if (size && sp.s_ < sp.end_) {
         *sp.s_ = 0;
-    } else if (size) {
+    } else if (size && sp.end_ != (char*)(uintptr_t)-1) {
         sp.end_[-1] = 0;
     }
     return sp.n_;
 }
 
-ssize_t snprintf(char* s, size_t size, const char* format, ...) {
+int snprintf(char* s, size_t size, const char* format, ...) {
     va_list val;
     va_start(val, format);
     int n = vsnprintf(s, size, format, val);

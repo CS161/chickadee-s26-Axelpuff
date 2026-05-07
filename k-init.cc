@@ -284,6 +284,12 @@ void cpustate::init_cpu_hardware() {
     cr0 |= CR0_PE | CR0_PG | CR0_WP | CR0_AM | CR0_MP | CR0_NE;
     wrcr0(cr0);
 
+    // Enable SSE: without OSFXSR, every SSE instruction (including the
+    // xorps that gcc emits for zero-initialization on x86-64) faults #UD.
+    uint64_t cr4 = rdcr4();
+    cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT;
+    wrcr4(cr4);
+
 
     // set up syscall/sysret
     wrmsr(MSR_IA32_KERNEL_GS_BASE, 0);

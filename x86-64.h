@@ -178,6 +178,7 @@ typedef struct x86_64_msr_t {
 #define CR4_PGE                 0x00000080      // Page Global Enable
 #define CR4_PCE                 0x00000100      // Perfmonitor Counter Enable
 #define CR4_OSFXSR              0x00000200      // OS FXSAVE/FXRSTOR support
+#define CR4_OSXMMEXCPT          0x00000400      // OS unmasked SSE exceptions
 #define CR4_VMXE                0x00004000      // VMX Enable
 
 // eflags bits (useful for rdeflags() and wreflags())

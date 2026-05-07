@@ -1,0 +1,67 @@
+# chickadee.ti
+#
+# Terminfo source description for the Chickadee kernel VT100 emulator.
+#
+# Based on the standard vt100 entry, customised for what k-vt100.cc
+# actually implements:
+#
+#   - 80 columns x 25 rows (CGA framebuffer)
+#   - Cursor movement: CUP (H/f), CUU/CUD/CUF/CUB (A/B/C/D)
+#   - Erase: ED (J), EL (K)  with n=0/1/2 variants
+#   - SGR: reset (0), bold (1), underline-as-blue (4), reverse (7),
+#          ANSI FG 30-37, BG 40-47, FG-reset 39, BG-reset 49
+#   - Scroll region: DECSTBM (r)
+#   - Index / Reverse-index: ESC D / ESC M
+#   - Save / Restore cursor: ESC 7 / ESC 8
+#   - Auto-wrap: enabled (am)
+#
+# Capabilities NOT included (not implemented in k-vt100.cc):
+#   - smcup/rmcup    (no alternate screen buffer)
+#   - civis/cnorm    (h/l dispatch ignores ?25 private mode)
+#   - smkx/rmkx      (application-keypad mode ignored)
+#   - ht             (TAB is silently dropped in handle_ground)
+#
+# Compile on the host build machine with:
+#   tic -x -o terminfo terminfo/chickadee.ti
+# This produces terminfo/c/chickadee (compiled binary).
+#
+# ncurses configure flags for Chickadee:
+#   --with-fallbacks=chickadee   (statically embeds this entry)
+#   TERMINFO=$PWD/terminfo       (runtime lookup path)
+#
+chickadee|chickadee kernel VT100 terminal emulator,
+    am, xenl,
+    cols#80, lines#25,
+    colors#8, pairs#64, ncv#3,
+    bel=^G,
+    cr=\r,
+    clear=\E[H\E[2J,
+    home=\E[H,
+    cup=\E[%i%p1%d;%p2%dH,
+    cuu1=\E[A,   cuu=\E[%p1%dA,
+    cud1=\E[B,   cud=\E[%p1%dB,
+    cuf1=\E[C,   cuf=\E[%p1%dC,
+    cub1=\E[D,   cub=\E[%p1%dD,
+    ed=\E[J,
+    el=\E[K,
+    el1=\E[1K,
+    il1=\E[L,    il=\E[%p1%dL,
+    dl1=\E[M,    dl=\E[%p1%dM,
+    ich1=\E[@,   ich=\E[%p1%d@,
+    dch1=\E[P,   dch=\E[%p1%dP,
+    sgr0=\E[m,
+    bold=\E[1m,
+    smul=\E[4m,  rmul=\E[m,
+    rev=\E[7m,
+    setaf=\E[3%p1%dm,
+    setab=\E[4%p1%dm,
+    op=\E[39;49m,
+    sc=\E7, rc=\E8,
+    ri=\EM,
+    ind=\ED,
+    csr=\E[%i%p1%d;%p2%dr,
+    kbs=\177,
+    kcuu1=\E[A, kcud1=\E[B, kcuf1=\E[C, kcub1=\E[D,
+    kf1=\E[11~, kf2=\E[12~, kf3=\E[13~, kf4=\E[14~,
+    kdch1=\E[3~, khome=\E[1~, kend=\E[4~,
+    kpp=\E[5~, knp=\E[6~,

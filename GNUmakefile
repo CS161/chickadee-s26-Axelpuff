@@ -82,7 +82,7 @@ FIND_PROCESSES_OPTIONS := -v MIN=$(MIN) -v CHICKADEE_FIRST_PROCESS=$(CHICKADEE_F
 INIT_PROCESSES := $(shell awk $(FIND_PROCESSES_OPTIONS) -v DISK=0 -f build/findprocesses.awk p-*.cc)
 DISK_PROCESSES := $(shell awk $(FIND_PROCESSES_OPTIONS) -v DISK=1 -f build/findprocesses.awk p-*.cc)
 
-PROCESS_LIB_OBJS = $(OBJDIR)/lib.uo $(OBJDIR)/u-lib.uo $(OBJDIR)/crc32c.uo
+PROCESS_LIB_OBJS = $(OBJDIR)/lib.uo $(OBJDIR)/u-lib.uo $(OBJDIR)/u-malloc.uo $(OBJDIR)/crc32c.uo
 
 
 # File system contents
@@ -132,7 +132,7 @@ $(OBJDIR)/bootentry.o: $(OBJDIR)/%.o: \
 	$(call assemble,-Os -c $< -o $@,ASSEMBLE $<)
 
 $(OBJDIR)/%.uo: %.cc $(BUILDSTAMPS)
-	$(call cxxcompile,$(O) $(CXXFLAGS) $(DEBUGFLAGS) -DCHICKADEE_PROCESS -c $< -o $@,COMPILE $<)
+	$(call cxxcompile,$(O) $(CXXFLAGS) $(DEBUGFLAGS) -DCHICKADEE_PROCESS -I usr/include -c $< -o $@,COMPILE $<)
 
 $(OBJDIR)/%.uo: %.S $(OBJDIR)/u-asm.h $(BUILDSTAMPS)
 	$(call assemble,$(O) -c $< -o $@,ASSEMBLE $<)
@@ -166,6 +166,15 @@ $(OBJDIR)/firstprocess.gdb:
 
 $(OBJDIR)/kernel.full: $(KERNEL_OBJS) $(INITFS_CONTENTS) kernel.ld
 	$(call link,-T kernel.ld -z noexecstack -o $@ $(KERNEL_OBJS) -b binary $(INITFS_CONTENTS),LINK)
+
+# p-curses needs the ncurses include path at compile time and libncurses.a at link time.
+NCURSES_LIB = ncurses-6.6/build-chickadee/lib/libncurses.a
+
+$(OBJDIR)/p-curses.uo: p-curses.cc $(BUILDSTAMPS)
+	$(call cxxcompile,$(O) $(CXXFLAGS) $(DEBUGFLAGS) -DCHICKADEE_PROCESS -I ncurses-6.6/build-chickadee/include -I usr/include -c $< -o $@,COMPILE $<)
+
+$(OBJDIR)/p-curses.full: $(OBJDIR)/p-curses.uo $(PROCESS_LIB_OBJS) $(NCURSES_LIB) process.ld
+	$(call link,-T process.ld -o $@ $< $(PROCESS_LIB_OBJS) $(NCURSES_LIB),LINK)
 
 $(OBJDIR)/p-%.full: $(OBJDIR)/p-%.uo $(PROCESS_LIB_OBJS) process.ld
 	$(call link,-T process.ld -o $@ $< $(PROCESS_LIB_OBJS),LINK)
@@ -223,6 +232,17 @@ chickadeefs.img: $(OBJDIR)/mkchickadeefs \
 	$(OBJDIR)/bootsector $(OBJDIR)/kernel $(DISKFS_CONTENTS) \
 	$(DISKFS_BUILDSTAMP)
 	$(call run,$(OBJDIR)/mkchickadeefs -b 32768 -f 16 -j 64 -s $(OBJDIR)/bootsector $(OBJDIR)/kernel $(DISKFS_CONTENTS) > $@,CREATE $@)
+
+
+TERMINFO_SRC := terminfo/chickadee.ti
+TERMINFO_BIN := terminfo/c/chickadee
+
+$(TERMINFO_BIN): $(TERMINFO_SRC)
+	$(call run,mkdir -p terminfo/c)
+	$(call run,tic -x -o terminfo $(TERMINFO_SRC),TIC $<)
+
+terminfo: $(TERMINFO_BIN)
+.PHONY: terminfo
 
 cleanfs:
 	$(call run,rm -f chickadeefs.img,RM chickadeefs.img)

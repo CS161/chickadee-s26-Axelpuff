@@ -3,4 +3,5 @@ layout main
 
 # b syscall_entry
 # b *0x10122e
+b *0x112807
 # b resume_yieldstate

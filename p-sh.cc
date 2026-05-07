@@ -2,6 +2,15 @@
 #define ANDAND  1
 #define OROR    2
 
+// Minimal environment for child processes.
+const char* const shell_environ[] = {
+    "TERM=chickadee",
+    "HOME=/",
+    "PATH=/",
+    nullptr
+};
+const char* const* environ = shell_environ;
+
 static void run_list(char* list);
 
 void process_main() {

@@ -27,11 +27,13 @@ int strncmp(const char* a, const char* b, size_t maxlen);
 int strcasecmp(const char* a, const char* b);
 int strncasecmp(const char* a, const char* b, size_t maxlen);
 char* strchr(const char* s, int c);
+char* strrchr(const char* s, int c);
 char* strstr(const char* haystack, const char* needle);
 long strtol(const char* s, char** endptr = nullptr, int base = 0);
 unsigned long strtoul(const char* s, char** endptr = nullptr, int base = 0);
-ssize_t snprintf(char* s, size_t size, const char* format, ...);
-ssize_t vsnprintf(char* s, size_t size, const char* format, va_list val);
+int atoi(const char* s);
+int snprintf(char* s, size_t size, const char* format, ...);
+int vsnprintf(char* s, size_t size, const char* format, va_list val);
 inline bool isspace(int c);
 inline bool isdigit(int c);
 inline bool islower(int c);
@@ -479,9 +481,10 @@ struct winsize {
 #define SIGSTOP     19
 #define SIGWINCH    28
 
-// SIG_DFL / SIG_IGN sentinels for struct sigaction::sa_handler
+// SIG_DFL / SIG_IGN / SIG_ERR sentinels for struct sigaction::sa_handler
 #define SIG_DFL     ((void(*)(int)) 0)   // default disposition (usually terminate)
 #define SIG_IGN     ((void(*)(int)) 1)   // ignore the signal
+#define SIG_ERR     ((void(*)(int))-1)   // error return from signal()
 
 // struct sigaction
 //    Kernel honors sa_handler, while sa_mask and sa_flags are stored but

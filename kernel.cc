@@ -86,9 +86,14 @@ void start_initial_process(pid_t pid, const char* name) {
   p->regs_->reg_rip = ld.entry_rip_;
 
   // initialize stack
-  void* stkpg = kalloc(PAGESIZE);
-  assert(stkpg);
-  vmiter(pt, MEMSIZE_VIRTUAL - PAGESIZE).map(stkpg, PTE_PWU);
+  // Map several pages so ncurses / glibc routines compiled with
+  // -fstack-clash-protection (which probe each new page with `orq $0,(%rsp)`)
+  // don't fault on their first deep call.
+  for (int si = 0; si < 16; ++si) {
+    void* stkpg = kalloc(PAGESIZE);
+    assert(stkpg);
+    vmiter(pt, MEMSIZE_VIRTUAL - (si + 1) * PAGESIZE).map(stkpg, PTE_PWU);
+  }
   p->regs_->reg_rsp = MEMSIZE_VIRTUAL;
 
   // initialize fd table
@@ -753,12 +758,23 @@ uintptr_t proc::syscall(regstate* regs) {
     // argv addr in new pagetable
     uintptr_t argv_start_new = argv_start - reinterpret_cast<uintptr_t>(stkpg) + MEMSIZE_VIRTUAL - PAGESIZE;
     
-    // map new stack page
+    // map new stack page (top page holds argv)
     int m = vmiter(pt, MEMSIZE_VIRTUAL - PAGESIZE).try_map(stkpg, PTE_PWU);
     if (m < 0) {
       kfree(stkpg);
       cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
       return r;
+    }
+    // map additional stack pages below the argv page so deep call chains
+    // (e.g. ncurses initscr -> newterm -> _nc_setupscreen -> ...) don't
+    // overflow the single 4 KB page
+    for (int si = 1; si < 8; ++si) {
+      void* xpg = kalloc(PAGESIZE);
+      if (!xpg || vmiter(pt, MEMSIZE_VIRTUAL - (si + 1) * PAGESIZE).try_map(xpg, PTE_PWU) < 0) {
+        if (xpg) kfree(xpg);
+        cleanup_pagetable(pt, MEMSIZE_VIRTUAL);
+        return E_NOMEM;
+      }
     }
     // map console
     m = vmiter(pt, ktext2pa(console)).try_map(console, PTE_PWU);
